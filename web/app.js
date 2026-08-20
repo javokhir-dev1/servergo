@@ -2072,7 +2072,24 @@ async function tick() {
   timer = setTimeout(tick, state.interval);
 }
 
+// Sof yangi o'rnatish (hali kirilmagan VA lokal apps/loyihalar bo'sh) —
+// foydalanuvchi "Bulut" tugmasini o'zi qidirib topmasin, to'g'ridan-to'g'ri
+// login formasidan boshlaymiz. Mavjud (allaqachon ma'lumoti bor yoki
+// kirilgan) o'rnatishlarga tegilmaydi — ular odatdagidek "Umumiy"dan boshlanadi.
+async function decideInitialView() {
+  const statusRes = await api.authStatus();
+  state.cloudStatus = statusRes.ok ? statusRes.data : null;
+  state.cloudError = statusRes.ok ? null : statusRes.error;
+  if (state.cloudStatus && state.cloudStatus.loggedIn) return;
+
+  const [appsRes, projRes] = await Promise.all([api.appsList(), api.tunProjects()]);
+  const noApps = appsRes.ok && Array.isArray(appsRes.data) && appsRes.data.length === 0;
+  const noProjects = !projRes.ok || (Array.isArray(projRes.data) && projRes.data.length === 0);
+  if (noApps && noProjects) setView('cloud');
+}
+
 (async function init() {
+  await decideInitialView();
   await refreshInfo();
   await refreshActive();
   setInterval(refreshInfo, 3000);
