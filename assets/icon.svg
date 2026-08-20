@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect width="256" height="256" rx="52" fill="#12151c"/>
+  <rect x="20" y="20" width="216" height="216" rx="38" fill="none" stroke="#262c39" stroke-width="4"/>
+  <polyline points="44,168 78,168 96,116 120,196 144,88 166,152 184,132 212,132"
+            fill="none" stroke="#4c8dff" stroke-width="12"
+            stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="120" cy="196" r="10" fill="#2ecc8f"/>
+  <text x="128" y="72" text-anchor="middle" font-family="Ubuntu, Segoe UI, sans-serif"
+        font-size="40" font-weight="700" fill="#e6e9ef" letter-spacing="2">PM2</text>
+</svg>

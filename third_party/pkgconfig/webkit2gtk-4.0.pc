@@ -1,0 +1,16 @@
+# webkit2gtk-4.0 uchun shim.
+#
+# webview_go (v0.0.0-20240831120633) cgo direktivasida `webkit2gtk-4.0` ni
+# qattiq yozib qo'ygan va yangiroq versiyasi chiqmagan. Ubuntu 25.10+ da esa
+# libwebkit2gtk-4.0-dev paketi umuman yo'q — faqat 4.1 bor.
+#
+# 4.0 va 4.1 ning C API si bir xil; farqi — 4.1 libsoup3 ga, 4.0 libsoup2 ga
+# bog'langan. Biz libsoup ni to'g'ridan-to'g'ri ishlatmaymiz, shuning uchun
+# 4.1 ga yo'naltirish xavfsiz.
+#
+# Makefile bu papkani PKG_CONFIG_PATH ga qo'shadi.
+
+Name: WebKitGTK (4.0 -> 4.1 shim)
+Description: webkit2gtk-4.1 ni webkit2gtk-4.0 nomi ostida beradi
+Version: 2.52.3
+Requires: webkit2gtk-4.1

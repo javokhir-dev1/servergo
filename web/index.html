@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="uz">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'" />
+    <title>ServerGo</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">SG</span>
+        <span class="brand-text">ServerGo</span>
+      </div>
+
+      <nav class="nav" id="nav">
+        <button class="nav-btn active" data-view="overview">Umumiy</button>
+        <button class="nav-btn" data-view="pm2">Jarayonlar</button>
+        <button class="nav-btn" data-view="apps">Ilovalar</button>
+        <button class="nav-btn" data-view="ram">RAM</button>
+        <button class="nav-btn" data-view="tunnel">Tunnellar</button>
+      </nav>
+
+      <div class="daemon" id="daemon">
+        <span class="dot" id="daemon-dot"></span>
+        <span id="daemon-text">Tekshirilyapti…</span>
+      </div>
+
+      <div class="host" id="host-metrics"></div>
+
+      <div class="spacer"></div>
+
+      <label class="auto">
+        <input type="checkbox" id="auto-refresh" checked />
+        <span>Avto</span>
+      </label>
+      <select id="interval" class="select" title="Yangilanish oralig'i">
+        <option value="1000">1s</option>
+        <option value="2000" selected>2s</option>
+        <option value="5000">5s</option>
+        <option value="10000">10s</option>
+      </select>
+      <button class="btn" id="refresh-btn" title="Hozir yangilash (Ctrl+R)">Yangilash</button>
+    </header>
+
+    <!-- ============ Umumiy — barcha bo'limlar bo'yicha kuzatish ============ -->
+    <div class="view" id="view-overview">
+      <div class="ov-layout">
+        <div class="ov-col">
+          <div class="ov-panel">
+            <div class="ov-panel-head">
+              <span class="ov-panel-title">Jarayonlar</span>
+              <span class="status" id="ov-pm2-dot"></span>
+            </div>
+            <div class="ov-panel-sub" id="ov-pm2-sub"></div>
+            <div class="ov-table-wrap">
+              <table class="grid ov-table">
+                <thead>
+                  <tr><th>Nom</th><th>Holat</th><th class="num">CPU</th><th class="num">RAM</th></tr>
+                </thead>
+                <tbody id="ov-pm2-list"></tbody>
+              </table>
+            </div>
+            <div class="ov-empty" id="ov-pm2-empty" hidden>Jarayonlar yo'q</div>
+          </div>
+
+          <div class="ov-panel">
+            <div class="ov-panel-head">
+              <span class="ov-panel-title">Tunnellar</span>
+              <span class="status" id="ov-tun-dot"></span>
+            </div>
+            <div class="ov-panel-sub" id="ov-tun-sub"></div>
+            <div class="ov-table-wrap">
+              <table class="grid ov-table">
+                <thead>
+                  <tr><th>Nom</th><th>Holat</th><th>Manzil</th></tr>
+                </thead>
+                <tbody id="ov-tun-list"></tbody>
+              </table>
+            </div>
+            <div class="ov-empty" id="ov-tun-empty" hidden>Loyihalar yo'q</div>
+          </div>
+        </div>
+
+        <div class="ov-col ov-gauges">
+          <div class="gauge-card" id="g-ram-card">
+            <svg class="gauge" viewBox="0 0 120 120">
+              <circle class="gauge-bg" cx="60" cy="60" r="52"></circle>
+              <circle class="gauge-fg" id="g-ram-fg" cx="60" cy="60" r="52"></circle>
+            </svg>
+            <div class="gauge-text">
+              <div class="gauge-value" id="g-ram-value">—</div>
+              <div class="gauge-label">RAM</div>
+              <div class="gauge-sub" id="g-ram-sub"></div>
+            </div>
+          </div>
+
+          <div class="gauge-card" id="g-cpu-card">
+            <svg class="gauge" viewBox="0 0 120 120">
+              <circle class="gauge-bg" cx="60" cy="60" r="52"></circle>
+              <circle class="gauge-fg" id="g-cpu-fg" cx="60" cy="60" r="52"></circle>
+            </svg>
+            <div class="gauge-text">
+              <div class="gauge-value" id="g-cpu-value">—</div>
+              <div class="gauge-label">CPU yuk</div>
+              <div class="gauge-sub" id="g-cpu-sub"></div>
+            </div>
+          </div>
+
+          <div class="gauge-card" id="g-temp-card">
+            <svg class="gauge" viewBox="0 0 120 120">
+              <circle class="gauge-bg" cx="60" cy="60" r="52"></circle>
+              <circle class="gauge-fg" id="g-temp-fg" cx="60" cy="60" r="52"></circle>
+            </svg>
+            <div class="gauge-text">
+              <div class="gauge-value" id="g-temp-value">—</div>
+              <div class="gauge-label">CPU harorat</div>
+              <div class="gauge-sub" id="g-temp-sub"></div>
+            </div>
+          </div>
+
+          <div class="gauge-card" id="g-disk-card">
+            <svg class="gauge" viewBox="0 0 120 120">
+              <circle class="gauge-bg" cx="60" cy="60" r="52"></circle>
+              <circle class="gauge-fg" id="g-disk-fg" cx="60" cy="60" r="52"></circle>
+            </svg>
+            <div class="gauge-text">
+              <div class="gauge-value" id="g-disk-value">—</div>
+              <div class="gauge-label">Disk (/)</div>
+              <div class="gauge-sub" id="g-disk-sub"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ Jarayonlar bo'limi ============ -->
+    <div class="view" id="view-pm2" hidden>
+      <div class="toolbar">
+        <input type="search" id="search" class="search" placeholder="Nom, ID yoki namespace bo'yicha qidirish…" />
+        <div class="filters" id="filters">
+          <button class="chip active" data-status="all">Hammasi <b id="c-all">0</b></button>
+          <button class="chip" data-status="online">Online <b id="c-online">0</b></button>
+          <button class="chip" data-status="stopped">To'xtagan <b id="c-stopped">0</b></button>
+          <button class="chip" data-status="errored">Xato <b id="c-errored">0</b></button>
+        </div>
+        <div class="spacer"></div>
+        <div class="totals" id="totals"></div>
+        <button class="btn" id="restart-all">Hammasini restart</button>
+        <button class="btn danger" id="stop-all">Hammasini to'xtatish</button>
+      </div>
+
+      <main class="layout">
+        <section class="table-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th class="sortable" data-key="id">ID</th>
+                <th class="sortable" data-key="name">Nom</th>
+                <th class="sortable" data-key="status">Holat</th>
+                <th class="sortable num" data-key="cpu">CPU</th>
+                <th class="sortable num" data-key="memory">RAM</th>
+                <th class="sortable num" data-key="uptime">Uptime</th>
+                <th class="sortable num" data-key="restarts">↺</th>
+                <th class="num">PID</th>
+                <th>Rejim</th>
+                <th class="actions-col">Amallar</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <div class="empty" id="empty" hidden></div>
+        </section>
+
+        <aside class="detail" id="detail" hidden>
+          <div class="detail-head">
+            <div>
+              <div class="detail-title" id="d-name">—</div>
+              <div class="detail-sub" id="d-sub">—</div>
+            </div>
+            <button class="icon-btn" id="detail-close" title="Yopish">✕</button>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-tab="info">Ma'lumot</button>
+            <button class="tab" data-tab="out">stdout</button>
+            <button class="tab" data-tab="err">stderr</button>
+          </div>
+
+          <div class="tab-body" id="tab-info"></div>
+
+          <div class="tab-body log-body" id="tab-out" hidden>
+            <div class="log-toolbar">
+              <label class="auto"><input type="checkbox" id="log-follow" checked /><span>Pastga ergashish</span></label>
+              <div class="spacer"></div>
+              <button class="btn small" id="log-flush">Loglarni tozalash</button>
+              <button class="btn small" id="log-open">Faylni ochish</button>
+            </div>
+            <pre class="log" id="out-log"></pre>
+          </div>
+
+          <div class="tab-body log-body" id="tab-err" hidden>
+            <div class="log-toolbar">
+              <div class="log-path" id="err-path"></div>
+              <div class="spacer"></div>
+              <button class="btn small" id="err-open">Faylni ochish</button>
+            </div>
+            <pre class="log err" id="err-log"></pre>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <!-- ============ RAM bo'limi ============ -->
+    <div class="view" id="view-ram" hidden>
+      <div class="toolbar">
+        <input type="search" id="ram-search" class="search" placeholder="Ilova nomi yoki yo'l bo'yicha qidirish…" />
+        <label class="auto" title="smaps_rollup dan PSS o'qiydi — aniqroq, lekin sekinroq">
+          <input type="checkbox" id="ram-accurate" /><span>Aniq rejim (PSS)</span>
+        </label>
+        <div class="spacer"></div>
+        <div class="totals" id="ram-meta"></div>
+      </div>
+
+      <div class="ram-body">
+        <section class="mem-card">
+          <div class="mem-bar">
+            <div class="seg used" id="seg-used"></div>
+            <div class="seg cache" id="seg-cache"></div>
+          </div>
+          <div class="mem-legend">
+            <span><i class="swatch used"></i>Band <b id="m-used">—</b></span>
+            <span><i class="swatch cache"></i>Kesh/bufer <b id="m-cache">—</b></span>
+            <span><i class="swatch free"></i>Bo'sh <b id="m-free">—</b></span>
+            <span>Mavjud <b id="m-avail">—</b></span>
+            <span>Swap <b id="m-swap">—</b></span>
+            <span>Jami <b id="m-total">—</b></span>
+          </div>
+        </section>
+
+        <section class="table-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>Ilova</th>
+                <th class="num">Jarayon</th>
+                <th class="num">RAM</th>
+                <th class="num">Ulush</th>
+                <th class="actions-col">Amallar</th>
+              </tr>
+            </thead>
+            <tbody id="ram-rows"></tbody>
+          </table>
+          <div class="empty" id="ram-empty" hidden></div>
+        </section>
+      </div>
+    </div>
+
+    <!-- ============ Tunnellar bo'limi ============ -->
+    <div class="view" id="view-tunnel" hidden>
+      <div class="toolbar">
+        <input type="search" id="tun-search" class="search" placeholder="Loyiha nomi yoki subdomen bo'yicha qidirish…" />
+        <select id="tun-domain" class="select" title="Bazaviy domen"></select>
+        <button class="btn small" id="tun-remove-domain" title="Faol domenni ro'yxatdan o'chirish">− Domen</button>
+        <button class="btn small" id="tun-add-domain" title="Yangi bazaviy domen qo'shish">+ Domen</button>
+        <div class="spacer"></div>
+        <div class="totals" id="tun-meta"></div>
+        <button class="btn" id="tun-applogs">Dastur loglari</button>
+        <button class="btn solid" id="tun-new">+ Yangi loyiha</button>
+      </div>
+
+      <!-- Sozlash sehrgari — cloudflared / login / domen tayyor bo'lmaganda -->
+      <div class="setup" id="tun-setup" hidden></div>
+
+      <div class="layout" id="tun-layout">
+        <section class="table-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>Loyiha</th>
+                <th>Manzil</th>
+                <th class="num">Port</th>
+                <th>Holat</th>
+                <th>Avtostart</th>
+                <th class="actions-col">Amallar</th>
+              </tr>
+            </thead>
+            <tbody id="tun-rows"></tbody>
+          </table>
+          <div class="empty" id="tun-empty" hidden></div>
+        </section>
+
+        <aside class="detail" id="tun-detail" hidden>
+          <div class="detail-head">
+            <div>
+              <div class="detail-title" id="tun-d-name">—</div>
+              <div class="detail-sub" id="tun-d-sub">—</div>
+            </div>
+            <button class="icon-btn" id="tun-detail-close" title="Yopish">✕</button>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-ttab="info">Ma'lumot</button>
+            <button class="tab" data-ttab="logs">Loglar</button>
+            <button class="tab" data-ttab="diag">Diagnostika</button>
+          </div>
+
+          <div class="tab-body" id="ttab-info"></div>
+
+          <div class="tab-body log-body" id="ttab-logs" hidden>
+            <div class="log-toolbar">
+              <label class="auto"><input type="checkbox" id="tun-log-follow" checked /><span>Pastga ergashish</span></label>
+              <div class="spacer"></div>
+              <button class="btn small" id="tun-log-open">Log faylini ochish</button>
+            </div>
+            <pre class="log" id="tun-log"></pre>
+          </div>
+
+          <div class="tab-body" id="ttab-diag" hidden></div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- ============ Ilovalar bo'limi ============ -->
+    <div class="view" id="view-apps" hidden>
+      <div class="toolbar">
+        <input type="search" id="app-search" class="search" placeholder="Ilova nomi bo'yicha qidirish…" />
+        <div class="spacer"></div>
+        <div class="totals" id="app-meta"></div>
+        <button class="btn solid" id="app-new">+ Yangi ilova</button>
+      </div>
+
+      <div class="layout" id="app-layout">
+        <section class="table-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>Ilova</th>
+                <th>Buyruq</th>
+                <th>Holat</th>
+                <th>Avtostart</th>
+                <th class="actions-col">Amallar</th>
+              </tr>
+            </thead>
+            <tbody id="app-rows"></tbody>
+          </table>
+          <div class="empty" id="app-empty" hidden></div>
+        </section>
+
+        <aside class="detail" id="app-detail" hidden>
+          <div class="detail-head">
+            <div>
+              <div class="detail-title" id="app-d-name">—</div>
+              <div class="detail-sub" id="app-d-sub">—</div>
+            </div>
+            <button class="icon-btn" id="app-detail-close" title="Yopish">✕</button>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-atab="info">Ma'lumot</button>
+            <button class="tab" data-atab="logs">Loglar</button>
+          </div>
+
+          <div class="tab-body" id="atab-info"></div>
+
+          <div class="tab-body log-body" id="atab-logs" hidden>
+            <div class="log-toolbar">
+              <label class="auto"><input type="checkbox" id="app-log-follow" checked /><span>Pastga ergashish</span></label>
+            </div>
+            <pre class="log" id="app-log"></pre>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- ============ Ilova formasi ============ -->
+    <div class="modal-backdrop" id="app-form-modal" hidden>
+      <div class="modal wide" role="dialog" aria-modal="true">
+        <div class="modal-title" id="app-form-title">Yangi ilova</div>
+        <div class="form">
+          <label class="field">
+            <span>Ilova nomi</span>
+            <input type="text" id="af-name" class="search" placeholder="Masalan: tg-bot" />
+          </label>
+          <label class="field">
+            <span>Buyruq</span>
+            <input type="text" id="af-command" class="search" placeholder="node server.js" />
+          </label>
+          <label class="field">
+            <span>Ishchi papka (bo'sh — uy papkasi)</span>
+            <input type="text" id="af-cwd" class="search" placeholder="/home/server/Desktop/bot" />
+          </label>
+          <label class="auto"><input type="checkbox" id="af-autostart" /><span>Server ishga tushganda avtomatik ishga tushsin</span></label>
+          <div class="form-note" id="af-note" hidden></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" id="app-form-cancel">Bekor qilish</button>
+          <button class="btn solid" id="app-form-save">Yaratish</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ Loyiha formasi ============ -->
+    <div class="modal-backdrop" id="form-modal" hidden>
+      <div class="modal wide" role="dialog" aria-modal="true">
+        <div class="modal-title" id="form-title">Yangi loyiha</div>
+        <div class="form">
+          <label class="field">
+            <span>Loyiha nomi</span>
+            <input type="text" id="f-name" class="search" placeholder="Masalan: Todo API" />
+          </label>
+          <div class="field-row">
+            <label class="field">
+              <span>Port</span>
+              <input type="number" id="f-port" class="search" min="1" max="65535" placeholder="3000" />
+            </label>
+            <label class="field">
+              <span>Protokol</span>
+              <select id="f-protocol" class="select">
+                <option value="http">http</option>
+                <option value="https">https</option>
+              </select>
+            </label>
+          </div>
+          <div class="field-row">
+            <label class="field">
+              <span>Subdomen (bo'sh — domenning o'zi uchun)</span>
+              <input type="text" id="f-sub" class="search" placeholder="todo — yoki bo'sh qoldiring" />
+            </label>
+            <label class="field">
+              <span>Bazaviy domen</span>
+              <select id="f-domain" class="select"></select>
+            </label>
+          </div>
+          <div class="preview" id="f-preview">—</div>
+          <label class="auto"><input type="checkbox" id="f-autostart" /><span>Dastur ochilganda avtomatik ishga tushsin</span></label>
+          <div class="form-note" id="f-note" hidden></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" id="form-cancel">Bekor qilish</button>
+          <button class="btn solid" id="form-save">Yaratish</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ Kichik kiritish oynasi (domen qo'shish) ============ -->
+    <div class="modal-backdrop" id="prompt-modal" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-title" id="prompt-title">—</div>
+        <div class="modal-message" id="prompt-message"></div>
+        <div class="form">
+          <input type="text" id="prompt-input" class="search" />
+          <div class="form-note" id="prompt-note" hidden></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" id="prompt-cancel">Bekor qilish</button>
+          <button class="btn solid" id="prompt-ok">Qo'shish</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ Tasdiqlash oynasi ============ -->
+    <div class="modal-backdrop" id="modal" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-title" id="modal-title">Tasdiqlang</div>
+        <div class="modal-message" id="modal-message"></div>
+        <pre class="modal-detail" id="modal-detail" hidden></pre>
+        <div class="modal-actions">
+          <button class="btn" id="modal-cancel">Bekor qilish</button>
+          <button class="btn danger solid" id="modal-ok">Ha</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
