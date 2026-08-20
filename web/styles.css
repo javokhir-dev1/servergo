@@ -773,6 +773,7 @@ td.app .app-path {
 
 /* Forma */
 .form { display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+.form.narrow { max-width: 360px; }
 .field { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0; }
 .field > span { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
 .field .search, .field .select { width: 100%; }

@@ -64,6 +64,13 @@ const api = {
   appsDelete: (id) => apiPost('/api/apps/delete', { id }),
   appsLogs: (id) => apiGet(`/api/apps/logs?id=${encodeURIComponent(id)}`),
   appsEvents: (since) => apiGet(`/api/apps/events?since=${Number(since) || 0}`),
+
+  // Bulut bo'limi
+  authStatus: () => apiGet('/api/auth/status'),
+  authLogin: (email, password) => apiPost('/api/auth/login', { email, password, deviceName: 'ServerGo GUI' }),
+  authLogout: () => apiPost('/api/auth/logout', {}),
+  syncPush: () => apiPost('/api/sync/push', {}),
+  syncPull: () => apiPost('/api/sync/pull', {}),
 };
 
 /* ============ Holat ============ */
@@ -106,6 +113,9 @@ const state = {
   appLogs: [],
   appSeq: 0,
   appEditingId: null, // null — yangi ilova, aks holda tahrir
+  // Bulut bo'limi
+  cloudStatus: null,
+  cloudError: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -311,6 +321,7 @@ function setView(view) {
   $('view-apps').hidden = view !== 'apps';
   $('view-ram').hidden = view !== 'ram';
   $('view-tunnel').hidden = view !== 'tunnel';
+  $('view-cloud').hidden = view !== 'cloud';
   document.querySelectorAll('.nav-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.view === view);
   });
@@ -782,6 +793,151 @@ async function killGroup(pid) {
   }
   await refreshRam();
 }
+
+/* ============ Bulut bo'limi ============
+ * Markaziy backend (api.servergo.uz) bilan login/logout va apps/tunnel
+ * loyihalarini sync push/pull qilish. Tunnel "sozlash sehrgari" bilan bir
+ * xil naqsh: box.dataset.key o'zgarmasa qayta chizilmaydi, aks holda
+ * foydalanuvchi yozayotgan email/parol maydonlari har yangilanishda
+ * (2 soniyada bir) tozalanib ketardi. */
+
+async function refreshCloud() {
+  const res = await api.authStatus();
+  if (!res.ok) {
+    state.cloudError = res.error;
+    state.cloudStatus = null;
+  } else {
+    state.cloudError = null;
+    state.cloudStatus = res.data;
+  }
+  renderCloud();
+}
+
+function cloudHTML(html, key) {
+  const box = $('cloud-box');
+  if (box.dataset.key === key) return;
+  box.innerHTML = html;
+  box.dataset.key = key;
+}
+
+function renderCloud() {
+  if (state.cloudError) {
+    cloudHTML(
+      `<div class="setup-head"><h2>Bulut bo'limi ishga tushmadi</h2><p>${esc(state.cloudError)}</p></div>`,
+      'err:' + state.cloudError);
+    return;
+  }
+
+  const s = state.cloudStatus;
+  if (!s || !s.loggedIn) {
+    cloudHTML(`
+      <div class="setup-head">
+        <h2>Bulut sinxronizatsiyasi</h2>
+        <p>Ilovalar va tunnel loyihalaringizni (Cloudflare tunnel maxfiy
+           kalitlari bilan birga) hisobingizga bog'lab, boshqa PC'da qayta
+           tiklashingiz mumkin — domenlar uchun qayta login qilmasdan.</p>
+      </div>
+      <div class="form narrow">
+        <label class="field"><span>Email</span>
+          <input type="email" id="cloud-email" class="search" placeholder="email@misol.com" autocomplete="username" />
+        </label>
+        <label class="field"><span>Parol</span>
+          <input type="password" id="cloud-password" class="search" autocomplete="current-password" />
+        </label>
+        <div class="form-note" id="cloud-note" hidden></div>
+        <div class="step-actions"><button class="btn solid" data-cloud="login">Kirish</button></div>
+      </div>
+    `, 'login-form');
+    return;
+  }
+
+  cloudHTML(`
+    <div class="setup-head">
+      <h2>Bulut sinxronizatsiyasi</h2>
+      <p>Kirilgan: <b>${esc(s.email)}</b> — ${esc(s.backendUrl)}</p>
+    </div>
+    <div class="step-actions">
+      <button class="btn solid" data-cloud="push">Push — yuborish</button>
+      <button class="btn solid" data-cloud="pull">Pull — olish</button>
+      <button class="btn" data-cloud="logout">Chiqish</button>
+    </div>
+    <div class="form-note" id="cloud-result" hidden></div>
+  `, 'account:' + s.email);
+}
+
+$('cloud-box').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.id === 'cloud-password') {
+    e.preventDefault();
+    $('cloud-box').querySelector('[data-cloud="login"]')?.click();
+  }
+});
+
+$('cloud-box').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-cloud]');
+  if (!btn) return;
+  const what = btn.dataset.cloud;
+
+  if (what === 'login') {
+    const note = $('cloud-note');
+    const email = ($('cloud-email').value || '').trim();
+    const password = $('cloud-password').value || '';
+    if (!email || !password) {
+      note.textContent = 'Email va parolni kiriting';
+      note.className = 'form-note error';
+      note.hidden = false;
+      return;
+    }
+    btn.disabled = true;
+    const res = await api.authLogin(email, password);
+    btn.disabled = false;
+    if (!res.ok) {
+      note.textContent = res.error;
+      note.className = 'form-note error';
+      note.hidden = false;
+      return;
+    }
+    toast(`Kirdingiz: ${res.data.email}`, 'success');
+    await refreshCloud();
+    return;
+  }
+
+  if (what === 'logout') {
+    btn.disabled = true;
+    const res = await api.authLogout();
+    btn.disabled = false;
+    if (!res.ok) { toast(res.error, 'error'); return; }
+    toast('Chiqdingiz', 'success');
+    await refreshCloud();
+    return;
+  }
+
+  if (what === 'push' || what === 'pull') {
+    document.querySelectorAll('[data-cloud]').forEach((b) => { b.disabled = true; });
+    toast(what === 'push' ? 'Yuborilmoqda…' : 'Olinmoqda…');
+    const res = what === 'push' ? await api.syncPush() : await api.syncPull();
+    document.querySelectorAll('[data-cloud]').forEach((b) => { b.disabled = false; });
+
+    const result = $('cloud-result');
+    if (!res.ok) {
+      toast(res.error, 'error');
+      if (result) {
+        result.textContent = res.error;
+        result.className = 'form-note error';
+        result.hidden = false;
+      }
+      return;
+    }
+    const d = res.data;
+    const summary = `${d.apps} ilova, ${d.projects} loyiha, ${d.domains} domen sertifikati`;
+    const label = what === 'push' ? 'Yuborildi' : 'Olindi';
+    toast(`${label}: ${summary}`, 'success');
+    if (result) {
+      result.textContent = `Oxirgi ${what === 'push' ? 'push' : 'pull'}: ${summary}`;
+      result.className = 'form-note';
+      result.hidden = false;
+    }
+  }
+});
 
 /* ============ Hodisalar ============ */
 
@@ -1801,6 +1957,7 @@ function refreshActive() {
   if (state.view === 'pm2') return refresh();
   if (state.view === 'apps') return refreshApps();
   if (state.view === 'ram') return refreshRam();
+  if (state.view === 'cloud') return refreshCloud();
   return refreshTunnel();
 }
 
