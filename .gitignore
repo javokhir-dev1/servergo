@@ -1,4 +1,5 @@
 pm2-monitor
 tmphead/
 servergo
+servergo.bak
 cloudflared-linux-amd64.deb

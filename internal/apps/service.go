@@ -201,6 +201,32 @@ func (s *Service) CreateApp(in AppInput) (*AppView, error) {
 	return &AppView{App: a}, nil
 }
 
+// ImportApp — cloudsync uchun: backend'dan kelgan ilovani BERILGAN ID bilan
+// yozadi (CreateApp'dan farqi — yangi UUID generatsiya qilmaydi). Shu ID'li
+// yozuv allaqachon mavjud bo'lsa, yangilanadi (idempotent — qayta sync
+// qilinsa xavfsiz).
+func (s *Service) ImportApp(id string, in AppInput) (*AppView, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if err := s.validate(&in, id); err != nil {
+		return nil, err
+	}
+	a := store.App{
+		ID:        id,
+		Name:      in.Name,
+		Command:   in.Command,
+		Cwd:       in.Cwd,
+		Autostart: in.Autostart,
+		Status:    "stopped",
+		CreatedAt: time.Now(),
+	}
+	if err := s.st.SaveApp(a); err != nil {
+		return nil, err
+	}
+	return &AppView{App: a}, nil
+}
+
 func (s *Service) UpdateApp(id string, in AppInput) (*AppView, error) {
 	if err := s.ready(); err != nil {
 		return nil, err

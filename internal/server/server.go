@@ -70,6 +70,7 @@ func (s *Server) Serve() error {
 	mux.HandleFunc("/api/open", s.guard(s.openPath))
 	s.registerTunnelRoutes(mux)
 	s.registerAppRoutes(mux)
+	s.registerSyncRoutes(mux)
 
 	srv := &http.Server{
 		Handler:     mux,

@@ -630,6 +630,39 @@ func (s *Service) CreateProject(in ProjectInput, overwriteDNS bool) (*ProjectVie
 	return &ProjectView{Project: p, URL: p.URL()}, nil
 }
 
+// ImportProject — cloudsync uchun: backend'dan kelgan loyihani BERILGAN ID
+// va MAVJUD tunnel (tunnelID/tunnelName) bilan yozadi. CreateProject'dan
+// farqi — yangi cloudflared tunnel yaratmaydi, DNS ham sozlamaydi (bular
+// allaqachon boshqa mashinada qilingan) — faqat metadata yoziladi.
+// cloudflared/cert.pem talab qilinmaydi. Loyiha "stopped" holatda qoladi —
+// credentials.json/config.yml fayllarini tiklash va ishga tushirish
+// chaqiruvchi tomonda (cloudsync.Pull) amalga oshiriladi.
+func (s *Service) ImportProject(id string, in ProjectInput, tunnelID, tunnelName string) (*ProjectView, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if err := s.validate(&in, id); err != nil {
+		return nil, err
+	}
+	p := store.Project{
+		ID:         id,
+		Name:       in.Name,
+		Port:       in.Port,
+		Subdomain:  in.Subdomain,
+		BaseDomain: in.BaseDomain,
+		Protocol:   in.Protocol,
+		TunnelID:   tunnelID,
+		TunnelName: tunnelName,
+		Autostart:  in.Autostart,
+		Status:     "stopped",
+		CreatedAt:  time.Now(),
+	}
+	if err := s.st.SaveProject(p); err != nil {
+		return nil, err
+	}
+	return &ProjectView{Project: p, URL: p.URL()}, nil
+}
+
 // UpdateProject — port/subdomen tahriri.
 func (s *Service) UpdateProject(id string, in ProjectInput) (*ProjectView, error) {
 	if err := s.ready(); err != nil {

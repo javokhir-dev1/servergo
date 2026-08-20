@@ -54,6 +54,7 @@ const (
 // mavjud nusxaga ulanib, natijani chiqarib chiqamiz.
 var cliVerbs = map[string]bool{
 	"status": true, "ps": true, "ram": true, "apps": true, "tunnel": true, "tun": true, "help": true,
+	"login": true, "logout": true, "sync": true,
 }
 
 func main() {

@@ -38,6 +38,12 @@ func Run(args []string) int {
 		runErr = cmdApps(c, rest)
 	case "tunnel", "tun":
 		runErr = cmdTunnel(c, rest)
+	case "login":
+		runErr = cmdLogin(c, rest)
+	case "logout":
+		runErr = cmdLogout(c, rest)
+	case "sync":
+		runErr = cmdSync(c, rest)
 	default:
 		fmt.Fprintf(os.Stderr, "noma'lum buyruq: %s\n\n", cmd)
 		printUsage()
@@ -102,6 +108,12 @@ Tunnellar:
   tunnel add-domain <domen>
   tunnel remove-domain <domen>
   tunnel active-domain <domen>        faol domenni belgilash
+
+Bulutli sinxronizatsiya:
+  login <email>                       backend'ga kirish (parol so'raladi)
+  login                                joriy holatni ko'rsatish
+  logout                               chiqish
+  sync [push|pull]                     ikkala tomonga (yoki faqat bittasiga) sync
 
 Eslatma: bu buyruqlar allaqachon ishlab turgan ServerGo nusxasiga (oyna
 yoki "servergo -daemon") ulanadi — o'zi alohida jarayon ko'tarmaydi.
