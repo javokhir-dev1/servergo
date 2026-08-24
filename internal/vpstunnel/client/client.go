@@ -35,11 +35,28 @@ type Config struct {
 
 const dialTimeout = 10 * time.Second
 
+// tcpKeepAlive — OS darajasidagi TCP keepalive davri. Bu NAT/firewall
+// jadvalidagi ulanish yozuvini tirik ushlab turishga yordam beradi (bo'sh
+// TCP ulanishlar ko'p marshrutizatorlarda ~1-2 daqiqada tozalanadi).
+const tcpKeepAlive = 15 * time.Second
+
+// yamuxConfig — standart sozlamalarga nisbatan tarmoqdagi qisqa
+// (bir necha soniyalik) uzilishlarga chidamliroq: interval qisqaroq (tezroq
+// ping — NAT yozuvini yangilab turadi), lekin pong kutish vaqti uzunroq
+// (bitta muvaqqat paket yo'qolishi sababli sessiya bekorga o'lib qolmasin).
+// Relay tomonidagi nusxasi bilan bir xil bo'lishi kerak: relay/internal/control/control.go.
+func yamuxConfig() *yamux.Config {
+	cfg := yamux.DefaultConfig()
+	cfg.KeepAliveInterval = 15 * time.Second
+	cfg.ConnectionWriteTimeout = 30 * time.Second
+	return cfg
+}
+
 // Run — bitta ulanish davri: bloklaydi, sessiya uzilguncha yoki ctx bekor
 // qilinguncha ishlaydi. onUp — ulanish tasdiqlangach (bitta marta)
 // chaqiriladi. onLog — sarlavhali diagnostika xabarlari uchun.
 func Run(ctx context.Context, cfg Config, onUp func(), onLog func(string)) error {
-	dialer := &net.Dialer{Timeout: dialTimeout}
+	dialer := &net.Dialer{Timeout: dialTimeout, KeepAlive: tcpKeepAlive}
 	rawConn, err := dialer.DialContext(ctx, "tcp", cfg.RelayAddr)
 	if err != nil {
 		return fmt.Errorf("relay'ga ulanib bo'lmadi (%s): %w", cfg.RelayAddr, err)
@@ -74,7 +91,7 @@ func Run(ctx context.Context, cfg Config, onUp func(), onLog func(string)) error
 		return err
 	}
 
-	sess, err := yamux.Client(tlsConn, yamux.DefaultConfig())
+	sess, err := yamux.Client(tlsConn, yamuxConfig())
 	if err != nil {
 		_ = tlsConn.Close()
 		return fmt.Errorf("yamux sessiya ochilmadi: %w", err)

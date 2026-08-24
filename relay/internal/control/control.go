@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"regexp"
+	"time"
 
 	"github.com/hashicorp/yamux"
 
@@ -36,6 +37,23 @@ type Handshake struct {
 }
 
 var hostnameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
+
+// tcpKeepAlive — OS darajasidagi TCP keepalive davri. Lokal tomondagi
+// nusxasi bilan bir xil: internal/vpstunnel/client/client.go.
+const tcpKeepAlive = 15 * time.Second
+
+// yamuxConfig — lokal tomondagi (internal/vpstunnel/client/client.go)
+// nusxasi bilan BIR XIL bo'lishi shart: ikkala tomon ham mustaqil ravishda
+// o'z keepalive jadvali bo'yicha ping yuboradi, biror tomon standart (10s)
+// pong kutish vaqtida javob ololmasa sessiyani o'zi yopadi — shu sabab bu
+// qiymat faqat client'da uzaytirilsa yetarli emas, relay ham xuddi shunday
+// bardoshli bo'lishi kerak.
+func yamuxConfig() *yamux.Config {
+	cfg := yamux.DefaultConfig()
+	cfg.KeepAliveInterval = 15 * time.Second
+	cfg.ConnectionWriteTimeout = 30 * time.Second
+	return cfg
+}
 
 func readHandshake(conn net.Conn) (Handshake, error) {
 	var lenBuf [4]byte
@@ -85,6 +103,12 @@ func Serve(ln net.Listener, tlsCfg *tls.Config, token string, reg *registry.Regi
 		if err != nil {
 			return err
 		}
+		if tlsConn, ok := conn.(*tls.Conn); ok {
+			if tcpConn, ok := tlsConn.NetConn().(*net.TCPConn); ok {
+				_ = tcpConn.SetKeepAlive(true)
+				_ = tcpConn.SetKeepAlivePeriod(tcpKeepAlive)
+			}
+		}
 		go handleConn(conn, token, reg)
 	}
 }
@@ -111,7 +135,7 @@ func handleConn(conn net.Conn, token string, reg *registry.Registry) {
 		return
 	}
 
-	sess, err := yamux.Server(conn, yamux.DefaultConfig())
+	sess, err := yamux.Server(conn, yamuxConfig())
 	if err != nil {
 		log.Printf("control: yamux server ochilmadi (%s): %v", conn.RemoteAddr(), err)
 		_ = conn.Close()

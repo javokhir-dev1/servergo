@@ -178,7 +178,7 @@ func (m *Manager) spawn(p store.Project, relay RelayConfig, restarts int) error 
 		}()
 
 		err := client.Run(ctx, cfg,
-			func() { m.setStatus(p.ID, "running", "") },
+			func() { pr.restarts = 0; m.setStatus(p.ID, "running", "") },
 			logLine,
 		)
 
