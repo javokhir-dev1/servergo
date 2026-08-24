@@ -124,6 +124,14 @@ func runOwner(daemonMode, headless bool) {
 	vt := vpstunnel.New()
 	defer vt.Close()
 
+	// Ikkala tunnel bo'limi mustaqil bazada ishlaydi, shuning uchun bittasi
+	// ikkinchisining subdomenlarini bilmaydi — shu bog'lanish bo'lmasa, bir
+	// xil subdomen (bir xil bazaviy domenda) ikkalasida ham yaratilib
+	// qolishi mumkin edi (DNS'da qaysi biri "aniqroq" bo'lsa o'sha jim
+	// g'olib chiqadi, ikkinchisi sababsiz ishlamay qoladi).
+	tun.SetCrossChecker(vt.SubdomainTaken)
+	vt.SetCrossChecker(tun.SubdomainTaken)
+
 	// pm2: saqlangan jarayonlar ro'yxatini tiklaydi (`pm2 save` qilinganlar).
 	// Shu bilan pm2'ning o'z systemd/sudo sozlashiga hojat qolmaydi — boot'da
 	// faqat ServerGo demoni (systemd user service) ko'tariladi, qolganini

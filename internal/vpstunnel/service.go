@@ -37,8 +37,25 @@ type Service struct {
 	mgr      *manager.Manager
 	fatalErr string
 
+	// crossCheck — Tunnellar (Cloudflare) bo'limidan subdomen bandligini
+	// so'rash uchun (main.go orqali ulanadi). Qarang: tunnel.Service.crossCheck.
+	crossCheck func(subdomain, baseDomain string) (bool, error)
+
 	events []Event
 	seq    int
+}
+
+// SetCrossChecker — boshqa bo'limning subdomen tekshiruvchisini ulaydi.
+func (s *Service) SetCrossChecker(fn func(subdomain, baseDomain string) (bool, error)) {
+	s.crossCheck = fn
+}
+
+// SubdomainTaken — boshqa bo'lim shu yerdan so'rashi uchun ochiq metod.
+func (s *Service) SubdomainTaken(subdomain, baseDomain string) (bool, error) {
+	if s.st == nil {
+		return false, nil
+	}
+	return s.st.SubdomainTaken(subdomain, baseDomain, "")
 }
 
 func New() *Service {
@@ -281,6 +298,15 @@ func (s *Service) validate(in *ProjectInput, excludeID string) (baseDomain strin
 	}
 	if taken {
 		return "", fmt.Errorf("'%s' allaqachon boshqa loyihada ishlatilgan", store.HostnameFor(in.Subdomain, baseDomain))
+	}
+	if s.crossCheck != nil {
+		taken, err := s.crossCheck(in.Subdomain, baseDomain)
+		if err != nil {
+			applog.Warn("Tunnellar (Cloudflare) bo'limidan subdomen tekshiruvi muvaffaqiyatsiz: %v", err)
+		} else if taken {
+			return "", fmt.Errorf("'%s' Tunnellar (Cloudflare) bo'limida allaqachon ishlatilgan — boshqa subdomen tanlang",
+				store.HostnameFor(in.Subdomain, baseDomain))
+		}
 	}
 	return baseDomain, nil
 }

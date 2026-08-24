@@ -60,8 +60,28 @@ type Service struct {
 	// bo'lsa ham).
 	domainLogin atomic.Bool
 
+	// crossCheck — VPS Tunnel bo'limidan subdomen bandligini so'rash uchun
+	// (main.go orqali ulanadi). Ikkala bo'lim mustaqil bazada ishlagani
+	// uchun bittasi ikkinchisining subdomenlarini bilmaydi — shu funksiya
+	// bo'lmasa, bir xil subdomen ikkalasida ham yaratilib, DNS'da qaysi
+	// biri "aniqroq" bo'lsa o'sha jim-jimgina g'olib chiqib qoladi.
+	crossCheck func(subdomain, baseDomain string) (bool, error)
+
 	events []Event
 	seq    int
+}
+
+// SetCrossChecker — boshqa bo'limning subdomen tekshiruvchisini ulaydi.
+func (s *Service) SetCrossChecker(fn func(subdomain, baseDomain string) (bool, error)) {
+	s.crossCheck = fn
+}
+
+// SubdomainTaken — boshqa bo'lim shu yerdan so'rashi uchun ochiq metod.
+func (s *Service) SubdomainTaken(subdomain, baseDomain string) (bool, error) {
+	if s.st == nil {
+		return false, nil
+	}
+	return s.st.SubdomainTaken(subdomain, baseDomain, "")
 }
 
 // New — bo'limni ishga tushiradi. Xatolik bo'lsa ham *Service qaytadi:
@@ -539,6 +559,15 @@ func (s *Service) validate(in *ProjectInput, excludeID string) error {
 	}
 	if taken {
 		return fmt.Errorf("'%s' allaqachon boshqa loyihada ishlatilgan", store.HostnameFor(in.Subdomain, in.BaseDomain))
+	}
+	if s.crossCheck != nil {
+		taken, err := s.crossCheck(in.Subdomain, in.BaseDomain)
+		if err != nil {
+			applog.Warn("VPS Tunnel bo'limidan subdomen tekshiruvi muvaffaqiyatsiz: %v", err)
+		} else if taken {
+			return fmt.Errorf("'%s' VPS Tunnel bo'limida allaqachon ishlatilgan — boshqa subdomen tanlang",
+				store.HostnameFor(in.Subdomain, in.BaseDomain))
+		}
 	}
 	return nil
 }
