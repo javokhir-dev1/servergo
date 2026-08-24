@@ -58,8 +58,11 @@ const api = {
 
   // VPS Tunnel bo'limi
   vtSetup: () => apiGet('/api/vpstunnel/setup'),
-  vtRelaySet: (addr, token, fingerprint, wildcardDomain) =>
-    apiPost('/api/vpstunnel/relay', { addr, token, fingerprint, wildcardDomain }),
+  vtRelaySet: (addr, token, fingerprint) =>
+    apiPost('/api/vpstunnel/relay', { addr, token, fingerprint }),
+  vtAddDomain: (domain) => apiPost('/api/vpstunnel/domain/add', { domain }),
+  vtRemoveDomain: (domain) => apiPost('/api/vpstunnel/domain/remove', { domain }),
+  vtSetDomain: (domain) => apiPost('/api/vpstunnel/domain/active', { domain }),
   vtProjects: () => apiGet('/api/vpstunnel/projects'),
   vtCreate: (input) => apiPost('/api/vpstunnel/project/create', input),
   vtUpdate: (id, input) => apiPost('/api/vpstunnel/project/update', { ...input, id }),
@@ -1652,6 +1655,21 @@ function renderVPSTunnel() {
   $('vt-new').disabled = !ready;
   $('vt-search').disabled = !ready;
 
+  // Domen tanlagich
+  const sel = $('vt-domain');
+  const domains = (s && s.domains) || [];
+  sel.hidden = domains.length === 0;
+  $('vt-add-domain').hidden = domains.length === 0;
+  $('vt-remove-domain').hidden = domains.length === 0;
+  if (domains.length) {
+    const current = s.activeDomain;
+    const want = domains.map((d) => `<option value="${esc(d)}"${d === current ? ' selected' : ''}>${esc(d)}</option>`).join('');
+    if (sel.dataset.rendered !== want) {
+      sel.innerHTML = want;
+      sel.dataset.rendered = want;
+    }
+  }
+
   if (!ready) {
     renderVTSetup();
     $('vt-meta').textContent = '';
@@ -1672,19 +1690,40 @@ function renderVTSetup() {
     box.innerHTML = `<div class="setup-head"><h2>VPS Tunnel bo'limi ishga tushmadi</h2><p>${esc(s.fatalError)}</p></div>`;
     return;
   }
+
+  const relayDone = s.relayConfigured;
+  const domainDone = (s.domains || []).length > 0;
+
+  const step = (n, done, active, title, desc, actions) => `
+    <div class="step ${done ? 'done' : active ? 'active' : ''}">
+      <div class="step-num">${done ? '✓' : n}</div>
+      <div class="step-body">
+        <div class="step-title">${title}</div>
+        <div class="step-desc">${desc}</div>
+        ${actions ? `<div class="step-actions">${actions}</div>` : ''}
+      </div>
+    </div>`;
+
   box.innerHTML = `
     <div class="setup-head">
       <h2>VPS Tunnel'ni sozlash</h2>
       <p>O'zingizning VPS'ingizda <code>servergo-relay</code>ni ishga tushiring
-         (qarang: README), so'ng uning manzili, tokeni va sertifikat
-         barmoq izini (fingerprint) shu yerga kiriting. Bundan tashqari
-         DNS panelingizda bitta wildcard yozuv qo'shishingiz kerak:
-         <code>*.sizning-domeningiz.uz → VPS_IP</code>.</p>
-      <div class="step-actions">
-        <button class="btn small solid" data-vtsetup="relay">Relay sozlamalarini kiritish</button>
-      </div>
-      ${s.relayAddr ? `<p class="form-note">Hozirgi manzil: <code>${esc(s.relayAddr)}</code>${s.wildcardDomain ? ` · wildcard: <code>*.${esc(s.wildcardDomain)}</code>` : ''}</p>` : ''}
-    </div>`;
+         (qarang: README — <code>scripts/install-relay.sh</code>).</p>
+    </div>
+
+    ${step(1, relayDone, !relayDone, 'Relay ulanishi',
+      relayDone
+        ? `Manzil: <code>${esc(s.relayAddr)}</code>`
+        : `VPS'da relay ishga tushgach chiqqan manzil, token va fingerprint'ni kiriting.`,
+      `<button class="btn small solid" data-vtsetup="relay">Relay sozlamalarini kiritish</button>`)}
+
+    ${step(2, domainDone, relayDone && !domainDone, 'Bazaviy domen',
+      domainDone
+        ? `Faol domen: <code>${esc(s.activeDomain)}</code>`
+        : `DNS panelingizda <code>*.domeningiz.uz → VPS_IP</code> wildcard yozuv qo'shgandan so'ng, o'sha domenni shu yerga kiriting.`,
+      `<input type="text" class="search" id="vt-new-domain" placeholder="vps.domeningiz.uz" />
+       <button class="btn small solid" data-vtsetup="domain" ${relayDone ? '' : 'disabled'}>Qo'shish</button>`)}
+  `;
 }
 
 function visibleVTProjects() {
@@ -1854,6 +1893,11 @@ function openVTProjectForm(id) {
   $('vf-protocol').value = p ? p.protocol : 'http';
   $('vf-autostart').checked = p ? p.autostart : false;
 
+  const domains = s.domains || [];
+  $('vf-domain').innerHTML = domains
+    .map((d) => `<option value="${esc(d)}"${(p ? p.baseDomain : s.activeDomain) === d ? ' selected' : ''}>${esc(d)}</option>`)
+    .join('');
+
   setVTFormNote('');
   updateVTFormPreview();
   $('vt-form-modal').hidden = false;
@@ -1873,11 +1917,13 @@ function setVTFormNote(msg, kind = '') {
 }
 
 function updateVTFormPreview() {
-  const sub = $('vf-sub').value.trim().toLowerCase();
-  const dom = (state.vtSetup && state.vtSetup.wildcardDomain) || '';
+  let sub = $('vf-sub').value.trim().toLowerCase();
+  if (sub === '@') sub = '';
+  const dom = $('vf-domain').value;
   const port = $('vf-port').value.trim();
   $('vf-preview').textContent =
-    dom && sub ? `localhost:${port || '?'} → https://${hostFor(sub, dom)}` : '—';
+    dom ? `localhost:${port || '?'} → https://${hostFor(sub, dom)}` : '—';
+  $('vf-apex-note').hidden = sub !== '';
 }
 
 function vtFormInput() {
@@ -1885,6 +1931,7 @@ function vtFormInput() {
     name: $('vf-name').value.trim(),
     port: Number($('vf-port').value),
     subdomain: $('vf-sub').value.trim().toLowerCase(),
+    baseDomain: $('vf-domain').value,
     protocol: $('vf-protocol').value,
     autostart: $('vf-autostart').checked,
   };
@@ -1922,7 +1969,6 @@ function openVTRelayForm() {
   $('vr-addr').value = (s && s.relayAddr) || '';
   $('vr-token').value = '';
   $('vr-fingerprint').value = '';
-  $('vr-wildcard').value = (s && s.wildcardDomain) || '';
   $('vr-note').hidden = true;
   $('vt-relay-modal').hidden = false;
   $('vr-addr').focus();
@@ -1936,10 +1982,9 @@ async function saveVTRelayForm() {
   const addr = $('vr-addr').value.trim();
   const token = $('vr-token').value.trim();
   const fingerprint = $('vr-fingerprint').value.trim();
-  const wildcardDomain = $('vr-wildcard').value.trim();
 
   $('vt-relay-save').disabled = true;
-  const res = await api.vtRelaySet(addr, token, fingerprint, wildcardDomain);
+  const res = await api.vtRelaySet(addr, token, fingerprint);
   $('vt-relay-save').disabled = false;
 
   if (!res.ok) {
@@ -2021,11 +2066,65 @@ $('vt-search').addEventListener('input', (e) => {
 
 $('vt-new').addEventListener('click', () => openVTProjectForm(null));
 $('vt-applogs').addEventListener('click', openVTAppLogs);
-$('vt-setup').addEventListener('click', (e) => {
+$('vt-setup').addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-vtsetup]');
-  if (btn && btn.dataset.vtsetup === 'relay') openVTRelayForm();
+  if (!btn) return;
+  if (btn.dataset.vtsetup === 'relay') {
+    openVTRelayForm();
+    return;
+  }
+  if (btn.dataset.vtsetup === 'domain') {
+    const val = $('vt-new-domain').value.trim();
+    if (!val) return;
+    btn.disabled = true;
+    const res = await api.vtAddDomain(val);
+    btn.disabled = false;
+    if (!res.ok) toast(res.error, 'error');
+    else toast(`"${val}" qo'shildi va faol domen qilib tanlandi`, 'success');
+    await refreshVPSTunnel();
+  }
 });
 $('vt-relay-edit').addEventListener('click', openVTRelayForm);
+
+$('vt-domain').addEventListener('change', async (e) => {
+  const res = await api.vtSetDomain(e.target.value);
+  if (!res.ok) toast(res.error, 'error');
+  await refreshVPSTunnel();
+});
+
+$('vt-add-domain').addEventListener('click', () => {
+  promptDialog({
+    title: 'Yangi bazaviy domen',
+    message: "DNS panelingizda ushbu domen uchun wildcard yozuv (*.domen → VPS IP) qo'shganingizga ishonch hosil qiling.",
+    placeholder: 'vps.domeningiz.uz',
+    okLabel: "Qo'shish",
+    onSubmit: async (val) => {
+      if (!val) return 'Domenni kiriting';
+      const res = await api.vtAddDomain(val);
+      if (!res.ok) return res.error;
+      toast(`"${val}" qo'shildi va faol domen qilib tanlandi`, 'success');
+      await refreshVPSTunnel();
+      return null;
+    },
+  });
+});
+
+$('vt-remove-domain').addEventListener('click', async () => {
+  const s = state.vtSetup;
+  const domain = s && s.activeDomain;
+  if (!domain) return;
+  const okd = await confirmDialog({
+    title: 'Domenni o\'chirish',
+    message: `"${domain}" ro'yxatdan o'chirilsinmi?`,
+    detail: "DNS'ga tegmaydi — bu faqat lokal ro'yxat. Domen biror loyihada ishlatilayotgan bo'lsa o'chirilmaydi.",
+    confirmLabel: "O'chirish",
+  });
+  if (!okd) return;
+  const res = await api.vtRemoveDomain(domain);
+  if (!res.ok) toast(res.error, 'error');
+  else toast(`"${domain}" ro'yxatdan o'chirildi`, 'success');
+  await refreshVPSTunnel();
+});
 
 $('vt-form-cancel').addEventListener('click', closeVTProjectForm);
 $('vt-form-save').addEventListener('click', saveVTProjectForm);
@@ -2033,6 +2132,7 @@ $('vt-form-modal').addEventListener('click', (e) => {
   if (e.target === $('vt-form-modal')) closeVTProjectForm();
 });
 ['vf-sub', 'vf-port'].forEach((id) => $(id).addEventListener('input', updateVTFormPreview));
+$('vf-domain').addEventListener('change', updateVTFormPreview);
 
 $('vt-relay-cancel').addEventListener('click', closeVTRelayForm);
 $('vt-relay-save').addEventListener('click', saveVTRelayForm);

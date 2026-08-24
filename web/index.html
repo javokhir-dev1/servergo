@@ -327,6 +327,9 @@
     <div class="view" id="view-vpstunnel" hidden>
       <div class="toolbar">
         <input type="search" id="vt-search" class="search" placeholder="Loyiha nomi yoki subdomen bo'yicha qidirish…" />
+        <select id="vt-domain" class="select" title="Bazaviy domen"></select>
+        <button class="btn small" id="vt-remove-domain" title="Faol domenni ro'yxatdan o'chirish">− Domen</button>
+        <button class="btn small" id="vt-add-domain" title="Yangi bazaviy domen qo'shish">+ Domen</button>
         <div class="spacer"></div>
         <div class="totals" id="vt-meta"></div>
         <button class="btn" id="vt-relay-edit">Relay sozlamalari</button>
@@ -532,11 +535,21 @@
               </select>
             </label>
           </div>
-          <label class="field">
-            <span>Subdomen</span>
-            <input type="text" id="vf-sub" class="search" placeholder="todo" />
-          </label>
+          <div class="field-row">
+            <label class="field">
+              <span>Subdomen (bo'sh — domenning o'zi uchun)</span>
+              <input type="text" id="vf-sub" class="search" placeholder="todo — yoki bo'sh qoldiring" />
+            </label>
+            <label class="field">
+              <span>Bazaviy domen</span>
+              <select id="vf-domain" class="select"></select>
+            </label>
+          </div>
           <div class="preview" id="vf-preview">—</div>
+          <div class="form-note" id="vf-apex-note" hidden>
+            Diqqat: domenning o'zi uchun (subdomensiz) wildcard yozuv (*.domen) YETARLI EMAS —
+            domenning o'ziga alohida A yozuv ham qo'shishingiz kerak.
+          </div>
           <label class="auto"><input type="checkbox" id="vf-autostart" /><span>Dastur ochilganda avtomatik ulansin</span></label>
           <div class="form-note" id="vf-note" hidden></div>
         </div>
@@ -563,10 +576,6 @@
           <label class="field">
             <span>Fingerprint (relay ishga tushganda konsolda chiqadi)</span>
             <input type="text" id="vr-fingerprint" class="search mono" placeholder="sha256 fingerprint" />
-          </label>
-          <label class="field">
-            <span>Wildcard domen</span>
-            <input type="text" id="vr-wildcard" class="search" placeholder="masalan: vps.domeningiz.uz" />
           </label>
           <div class="form-note" id="vr-note" hidden></div>
         </div>

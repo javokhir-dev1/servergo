@@ -13,6 +13,9 @@ import (
 func (s *Server) registerVPSTunnelRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/vpstunnel/setup", s.guard(s.vtSetup))
 	mux.HandleFunc("/api/vpstunnel/relay", s.guard(s.vtRelaySet))
+	mux.HandleFunc("/api/vpstunnel/domain/add", s.guard(s.vtDomainAdd))
+	mux.HandleFunc("/api/vpstunnel/domain/remove", s.guard(s.vtDomainRemove))
+	mux.HandleFunc("/api/vpstunnel/domain/active", s.guard(s.vtDomainActive))
 	mux.HandleFunc("/api/vpstunnel/projects", s.guard(s.vtProjects))
 	mux.HandleFunc("/api/vpstunnel/project/create", s.guard(s.vtCreate))
 	mux.HandleFunc("/api/vpstunnel/project/update", s.guard(s.vtUpdate))
@@ -48,15 +51,71 @@ func (s *Server) vtRelaySet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Addr           string `json:"addr"`
-		Token          string `json:"token"`
-		Fingerprint    string `json:"fingerprint"`
-		WildcardDomain string `json:"wildcardDomain"`
+		Addr        string `json:"addr"`
+		Token       string `json:"token"`
+		Fingerprint string `json:"fingerprint"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	state, err := svc.SetRelayConfig(req.Addr, req.Token, req.Fingerprint, req.WildcardDomain)
+	state, err := svc.SetRelayConfig(req.Addr, req.Token, req.Fingerprint)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeOK(w, state)
+}
+
+func (s *Server) vtDomainAdd(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.vtSvc(w)
+	if !ok {
+		return
+	}
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	state, err := svc.AddDomain(req.Domain)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeOK(w, state)
+}
+
+func (s *Server) vtDomainRemove(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.vtSvc(w)
+	if !ok {
+		return
+	}
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	state, err := svc.RemoveDomain(req.Domain)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeOK(w, state)
+}
+
+func (s *Server) vtDomainActive(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.vtSvc(w)
+	if !ok {
+		return
+	}
+	var req struct {
+		Domain string `json:"domain"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	state, err := svc.SetActiveDomain(req.Domain)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return

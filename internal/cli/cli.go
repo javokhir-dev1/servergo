@@ -114,16 +114,24 @@ Tunnellar:
 VPS Tunnel (o'z VPS'ingiz orqali, Cloudflare'siz):
   vpstunnel [list]                    loyihalar ro'yxati (-w — jonli kuzatish)
   vpstunnel create <port> <subdomen>   port'ni VPS orqali internetga chiqarish
-    [-n nom] [-s] [-a]                 -n: nom (standart: subdomen)
+    [-n nom] [-d domen] [-s] [-a]      -n: nom (standart: subdomen)
+                                        -d: bazaviy domen (standart: faol domen)
                                         -s: lokal servis https (standart: http)
                                         -a: avtostart yoqish
+                                        subdomen ko'rsatilmasa (yoki '@') —
+                                        domenning o'zi uchun (alohida A
+                                        yozuv kerak, wildcard yetarli emas)
   vpstunnel start   <id|nom>
   vpstunnel stop    <id|nom>
   vpstunnel restart <id|nom>
   vpstunnel delete  <id|nom>
   vpstunnel logs    <id|nom>
-  vpstunnel relay <manzil:port> <token> <fingerprint> <wildcard-domen>
+  vpstunnel relay <manzil:port> <token> <fingerprint>
                                        relay ulanishini sozlash (bir marta)
+  vpstunnel domains                   bazaviy domenlar ro'yxati
+  vpstunnel add-domain <domen>
+  vpstunnel remove-domain <domen>
+  vpstunnel active-domain <domen>     faol domenni belgilash
 
 Bulutli sinxronizatsiya:
   login <email>                       backend'ga kirish (parol so'raladi)

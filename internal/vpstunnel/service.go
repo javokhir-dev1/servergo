@@ -170,12 +170,13 @@ func (s *Service) runAutostart() {
 // ---- Relay sozlash ----
 
 type SetupState struct {
-	RelayAddr      string `json:"relayAddr"`
-	RelayConfigured bool  `json:"relayConfigured"`
-	WildcardDomain string `json:"wildcardDomain"`
-	Ready          bool   `json:"ready"`
-	FatalError     string `json:"fatalError"`
-	LogDir         string `json:"logDir"`
+	RelayAddr       string   `json:"relayAddr"`
+	RelayConfigured bool     `json:"relayConfigured"`
+	Domains         []string `json:"domains"`
+	ActiveDomain    string   `json:"activeDomain"`
+	Ready           bool     `json:"ready"`
+	FatalError      string   `json:"fatalError"`
+	LogDir          string   `json:"logDir"`
 }
 
 func (s *Service) relayConfig() manager.RelayConfig {
@@ -189,16 +190,53 @@ func (s *Service) relayConfig() manager.RelayConfig {
 	}
 }
 
+// migrateLegacyDomain — dastlabki versiyada bitta "wildcard_domain"
+// sozlamasi bor edi (bir nechta domenni qo'llab-quvvatlamasdi). Shu
+// qiymatni bir martalik ro'yxatga (base_domains/active_domain) ko'chiradi,
+// aks holda eski o'rnatishlarda domen ro'yxati bo'sh ko'rinib qolar edi.
+func (s *Service) migrateLegacyDomain() {
+	if s.st.GetSetting("base_domains", "") != "" {
+		return
+	}
+	legacy := s.st.GetSetting("wildcard_domain", "")
+	if legacy == "" {
+		return
+	}
+	_ = s.st.SetSetting("base_domains", legacy)
+	_ = s.st.SetSetting("active_domain", legacy)
+	applog.Info("Eski wildcard domen sozlamasi ko'chirildi: %s", legacy)
+}
+
+func (s *Service) domains() []string {
+	s.migrateLegacyDomain()
+	raw := s.st.GetSetting("base_domains", "")
+	if raw == "" {
+		return []string{}
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func (s *Service) SetupState() SetupState {
-	st := SetupState{FatalError: s.fatalErr, LogDir: store.LogDir()}
+	st := SetupState{Domains: []string{}, FatalError: s.fatalErr, LogDir: store.LogDir()}
 	if s.st == nil {
 		return st
 	}
 	rc := s.relayConfig()
 	st.RelayAddr = rc.Addr
 	st.RelayConfigured = rc.Addr != "" && rc.Token != "" && rc.Fingerprint != ""
-	st.WildcardDomain = s.st.GetSetting("wildcard_domain", "")
-	st.Ready = st.RelayConfigured && st.WildcardDomain != ""
+	st.Domains = s.domains()
+	st.ActiveDomain = s.st.GetSetting("active_domain", "")
+	if st.ActiveDomain == "" && len(st.Domains) > 0 {
+		st.ActiveDomain = st.Domains[0]
+	}
+	st.Ready = st.RelayConfigured && len(st.Domains) > 0
 	return st
 }
 
@@ -206,15 +244,15 @@ var hostPortRe = regexp.MustCompile(`^[a-zA-Z0-9.\-]+:\d+$`)
 var fingerprintRe = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 var domainRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
 
-// SetRelayConfig — relay manzili/token/fingerprint/wildcard domenini saqlaydi.
-func (s *Service) SetRelayConfig(addr, token, fingerprint, wildcardDomain string) (SetupState, error) {
+// SetRelayConfig — relay manzili/token/fingerprintini saqlaydi. Domenlar
+// alohida (AddDomain/RemoveDomain) boshqariladi.
+func (s *Service) SetRelayConfig(addr, token, fingerprint string) (SetupState, error) {
 	if err := s.ready(); err != nil {
 		return s.SetupState(), err
 	}
 	addr = strings.TrimSpace(addr)
 	token = strings.TrimSpace(token)
 	fingerprint = strings.ToLower(strings.TrimSpace(fingerprint))
-	wildcardDomain = strings.ToLower(strings.TrimSpace(wildcardDomain))
 
 	if !hostPortRe.MatchString(addr) {
 		return s.SetupState(), errors.New("relay manzili noto'g'ri (masalan: 1.2.3.4:9443)")
@@ -225,16 +263,96 @@ func (s *Service) SetRelayConfig(addr, token, fingerprint, wildcardDomain string
 	if !fingerprintRe.MatchString(fingerprint) {
 		return s.SetupState(), errors.New("fingerprint noto'g'ri — relay ishga tushganda chiqqan SHA256 qatorini nusxalang")
 	}
-	if !domainRe.MatchString(wildcardDomain) {
-		return s.SetupState(), errors.New("wildcard domen noto'g'ri formatda (masalan: uz.domeningiz.uz)")
-	}
 
 	_ = s.st.SetSetting("relay_addr", addr)
 	_ = s.st.SetSetting("relay_token", token)
 	_ = s.st.SetSetting("relay_fingerprint", fingerprint)
-	_ = s.st.SetSetting("wildcard_domain", wildcardDomain)
 	s.mgr.SetRelayConfig(s.relayConfig())
-	applog.Info("Relay sozlamalari saqlandi: %s (wildcard: *.%s)", addr, wildcardDomain)
+	applog.Info("Relay sozlamalari saqlandi: %s", addr)
+	return s.SetupState(), nil
+}
+
+// AddDomain — bazaviy domenlar ro'yxatiga qo'shadi va faol qilib tanlaydi.
+// Cloudflare bo'limidan farqli — bu yerda avtorizatsiya/login kerak emas,
+// faqat lokal ro'yxat: domen uchun wildcard DNS (*.domen → VPS IP) qo'lda
+// sozlanadi.
+func (s *Service) AddDomain(domain string) (SetupState, error) {
+	if err := s.ready(); err != nil {
+		return s.SetupState(), err
+	}
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	domain = strings.TrimPrefix(strings.TrimPrefix(domain, "https://"), "http://")
+	domain = strings.Trim(domain, "/")
+	if !domainRe.MatchString(domain) {
+		return s.SetupState(), errors.New("domen noto'g'ri formatda (masalan: vps.domeningiz.uz)")
+	}
+	for _, d := range s.domains() {
+		if d == domain {
+			_ = s.st.SetSetting("active_domain", domain)
+			return s.SetupState(), nil
+		}
+	}
+	list := append(s.domains(), domain)
+	_ = s.st.SetSetting("base_domains", strings.Join(list, ","))
+	_ = s.st.SetSetting("active_domain", domain)
+	applog.Info("Bazaviy domen qo'shildi: %s", domain)
+	return s.SetupState(), nil
+}
+
+// RemoveDomain — ro'yxatdan olib tashlaydi (DNS'ga tegmaydi). Domen biror
+// loyihada ishlatilayotgan bo'lsa rad etiladi.
+func (s *Service) RemoveDomain(domain string) (SetupState, error) {
+	if err := s.ready(); err != nil {
+		return s.SetupState(), err
+	}
+	domain = strings.ToLower(strings.TrimSpace(domain))
+
+	ps, err := s.st.ListProjects()
+	if err != nil {
+		return s.SetupState(), err
+	}
+	var used []string
+	for _, p := range ps {
+		if p.BaseDomain == domain {
+			used = append(used, p.Name)
+		}
+	}
+	if len(used) > 0 {
+		return s.SetupState(), fmt.Errorf(
+			"'%s' hali %d ta loyihada ishlatilyapti (%s) — avval o'sha loyihalarni o'chiring yoki boshqa domenga ko'chiring",
+			domain, len(used), strings.Join(used, ", "))
+	}
+
+	list := s.domains()
+	out := make([]string, 0, len(list))
+	found := false
+	for _, d := range list {
+		if d == domain {
+			found = true
+			continue
+		}
+		out = append(out, d)
+	}
+	if !found {
+		return s.SetupState(), fmt.Errorf("'%s' ro'yxatda yo'q", domain)
+	}
+	_ = s.st.SetSetting("base_domains", strings.Join(out, ","))
+	if s.st.GetSetting("active_domain", "") == domain {
+		next := ""
+		if len(out) > 0 {
+			next = out[0]
+		}
+		_ = s.st.SetSetting("active_domain", next)
+	}
+	applog.Info("Bazaviy domen ro'yxatdan o'chirildi: %s", domain)
+	return s.SetupState(), nil
+}
+
+func (s *Service) SetActiveDomain(domain string) (SetupState, error) {
+	if err := s.ready(); err != nil {
+		return s.SetupState(), err
+	}
+	_ = s.st.SetSetting("active_domain", domain)
 	return s.SetupState(), nil
 }
 
@@ -262,53 +380,68 @@ func (s *Service) ListProjects() ([]ProjectView, error) {
 }
 
 type ProjectInput struct {
-	Name      string `json:"name"`
-	Port      int    `json:"port"`
-	Subdomain string `json:"subdomain"`
-	Protocol  string `json:"protocol"`
-	Autostart bool   `json:"autostart"`
+	Name       string `json:"name"`
+	Port       int    `json:"port"`
+	Subdomain  string `json:"subdomain"`
+	BaseDomain string `json:"baseDomain"`
+	Protocol   string `json:"protocol"`
+	Autostart  bool   `json:"autostart"`
 }
 
 var subRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
-func (s *Service) validate(in *ProjectInput, excludeID string) (baseDomain string, err error) {
+func (s *Service) validate(in *ProjectInput, excludeID string) error {
 	in.Name = strings.TrimSpace(in.Name)
 	in.Subdomain = strings.ToLower(strings.TrimSpace(in.Subdomain))
+	in.BaseDomain = strings.ToLower(strings.TrimSpace(in.BaseDomain))
 	if in.Protocol == "" {
 		in.Protocol = "http"
 	}
 	if in.Name == "" {
-		return "", errors.New("loyiha nomini kiriting")
+		return errors.New("loyiha nomini kiriting")
 	}
 	if in.Port < 1 || in.Port > 65535 {
-		return "", errors.New("port 1 dan 65535 gacha bo'lishi kerak")
+		return errors.New("port 1 dan 65535 gacha bo'lishi kerak")
 	}
-	baseDomain = s.st.GetSetting("wildcard_domain", "")
-	if baseDomain == "" {
-		return "", errors.New("avval wildcard domen sozlanmagan")
+	// "@" — domenning o'zi uchun tunnel (subdomensiz). Diqqat: bunga wildcard
+	// DNS (*.domen) YETARLI EMAS — domenning o'zi uchun alohida A yozuv ham
+	// kerak (masalan domen.uz → VPS IP), aks holda bu loyiha ishlamaydi.
+	if in.Subdomain == "@" {
+		in.Subdomain = ""
 	}
-	// Wildcard DNS faqat subdomenlarga mos keladi (domenning o'zi emas),
-	// shuning uchun bu yerda (Cloudflare bo'limidan farqli) subdomen majburiy.
-	if in.Subdomain == "" || !subRe.MatchString(in.Subdomain) {
-		return "", errors.New("subdomen kiritish shart, faqat kichik harflar/raqamlar/'-' (wildcard DNS domenning o'zini qamramaydi)")
+	if in.Subdomain != "" && !subRe.MatchString(in.Subdomain) {
+		return errors.New("subdomen faqat kichik harflar, raqamlar va '-' dan iborat bo'lishi kerak (domenning o'zi uchun bo'sh qoldiring yoki '@' yozing)")
 	}
-	taken, err := s.st.SubdomainTaken(in.Subdomain, baseDomain, excludeID)
+	if in.BaseDomain == "" {
+		return errors.New("bazaviy domen tanlanmagan")
+	}
+	found := false
+	for _, d := range s.domains() {
+		if d == in.BaseDomain {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("'%s' bazaviy domenlar ro'yxatida yo'q — avval qo'shing", in.BaseDomain)
+	}
+	taken, err := s.st.SubdomainTaken(in.Subdomain, in.BaseDomain, excludeID)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if taken {
-		return "", fmt.Errorf("'%s' allaqachon boshqa loyihada ishlatilgan", store.HostnameFor(in.Subdomain, baseDomain))
+		return fmt.Errorf("'%s' allaqachon boshqa loyihada ishlatilgan", store.HostnameFor(in.Subdomain, in.BaseDomain))
 	}
 	if s.crossCheck != nil {
-		taken, err := s.crossCheck(in.Subdomain, baseDomain)
+		taken, err := s.crossCheck(in.Subdomain, in.BaseDomain)
 		if err != nil {
 			applog.Warn("Tunnellar (Cloudflare) bo'limidan subdomen tekshiruvi muvaffaqiyatsiz: %v", err)
 		} else if taken {
-			return "", fmt.Errorf("'%s' Tunnellar (Cloudflare) bo'limida allaqachon ishlatilgan — boshqa subdomen tanlang",
-				store.HostnameFor(in.Subdomain, baseDomain))
+			return fmt.Errorf("'%s' Tunnellar (Cloudflare) bo'limida allaqachon ishlatilgan — boshqa subdomen tanlang",
+				store.HostnameFor(in.Subdomain, in.BaseDomain))
 		}
 	}
-	return baseDomain, nil
+	return nil
 }
 
 // CheckPort — lokal portda servis borligini tekshiradi.
@@ -325,8 +458,7 @@ func (s *Service) CreateProject(in ProjectInput) (*ProjectView, error) {
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
-	baseDomain, err := s.validate(&in, "")
-	if err != nil {
+	if err := s.validate(&in, ""); err != nil {
 		return nil, err
 	}
 	p := store.Project{
@@ -334,7 +466,7 @@ func (s *Service) CreateProject(in ProjectInput) (*ProjectView, error) {
 		Name:       in.Name,
 		Port:       in.Port,
 		Subdomain:  in.Subdomain,
-		BaseDomain: baseDomain,
+		BaseDomain: in.BaseDomain,
 		Protocol:   in.Protocol,
 		Autostart:  in.Autostart,
 		Status:     "stopped",
@@ -356,8 +488,7 @@ func (s *Service) UpdateProject(id string, in ProjectInput) (*ProjectView, error
 	if err != nil {
 		return nil, errors.New("loyiha topilmadi")
 	}
-	baseDomain, err := s.validate(&in, id)
-	if err != nil {
+	if err := s.validate(&in, id); err != nil {
 		return nil, err
 	}
 	wasRunning := s.mgr.IsRunning(id)
@@ -365,7 +496,7 @@ func (s *Service) UpdateProject(id string, in ProjectInput) (*ProjectView, error
 		_ = s.mgr.Stop(id)
 	}
 	p.Name, p.Port, p.Subdomain, p.BaseDomain, p.Protocol, p.Autostart =
-		in.Name, in.Port, in.Subdomain, baseDomain, in.Protocol, in.Autostart
+		in.Name, in.Port, in.Subdomain, in.BaseDomain, in.Protocol, in.Autostart
 	if err := s.st.SaveProject(p); err != nil {
 		return nil, err
 	}

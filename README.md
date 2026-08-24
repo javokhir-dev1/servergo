@@ -144,20 +144,31 @@ fingerprint'ni ko'rsatadi (`journalctl -u servergo-relay | grep fingerprint`
 bilan ham qarash mumkin). So'ng:
 
 1. Firewall'da `80`, `443`, `9443` portlarini oching.
-2. DNS panelingizda **bitta wildcard yozuv** qo'shing:
-   `*.sizning-domeningiz.uz → VPS_IP`.
+2. DNS panelingizda **wildcard yozuv** qo'shing: `*.sizning-domeningiz.uz →
+   VPS_IP` (bir nechta domen/wildcard qo'shish mumkin — Cloudflare bo'limidagi
+   kabi, ro'yxatda saqlanadi va ular orasida almashish mumkin).
 3. Desktop ilovada **"VPS Tunnel"** bo'limi → **"Relay sozlamalari"**:
-   VPS manzili (`IP:9443`), token, fingerprint, wildcard domen.
+   VPS manzili (`IP:9443`), token, fingerprint. So'ng **"+ Domen"** bilan
+   yuqoridagi wildcard domeningizni qo'shing.
 4. **"+ Yangi loyiha"** — port va subdomen kiritib **Run** bosing.
 
-Wildcard DNS faqat subdomenlarni qamraydi (domenning o'zini emas), shuning
-uchun bu bo'limda — Cloudflare bo'limidan farqli — subdomen kiritish shart.
+Subdomen bo'sh qoldirilsa (yoki `@`) — tunnel domenning o'ziga (subdomensiz)
+ochiladi, xuddi Cloudflare bo'limidagi kabi. **Diqqat**: wildcard yozuv
+(`*.domen`) domenning o'zini QAMRAMAYDI — shu turdagi loyiha uchun DNS
+panelida domenning o'ziga ALOHIDA A yozuv ham qo'shishingiz kerak (`domen.uz
+→ VPS_IP`, wildcard'dan tashqari).
+
+Ikkala bo'lim (Cloudflare va VPS Tunnel) bir xil bazaviy domenni bo'lisha
+oladi — subdomen bandligi ikkalasida ham o'zaro tekshiriladi, shuning uchun
+bitta subdomenni ikkalasida ham yaratib qo'yish (va biri boshqasini
+sababsiz "yutib yuborishi") mumkin emas.
 
 Buyruq qatoridan:
 
 ```
-servergo vpstunnel relay <manzil:port> <token> <fingerprint> <wildcard-domen>
-servergo vpstunnel create <port> <subdomen> [-n nom] [-s] [-a]
+servergo vpstunnel relay <manzil:port> <token> <fingerprint>
+servergo vpstunnel add-domain <domen>
+servergo vpstunnel create <port> [subdomen] [-n nom] [-d domen] [-s] [-a]
 servergo vpstunnel list
 ```
 
