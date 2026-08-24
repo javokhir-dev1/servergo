@@ -35,6 +35,7 @@ import (
 	"servergo/internal/pm2"
 	"servergo/internal/server"
 	"servergo/internal/tunnel"
+	"servergo/internal/vpstunnel"
 
 	webview "github.com/webview/webview_go"
 )
@@ -54,7 +55,7 @@ const (
 // mavjud nusxaga ulanib, natijani chiqarib chiqamiz.
 var cliVerbs = map[string]bool{
 	"status": true, "ps": true, "ram": true, "apps": true, "tunnel": true, "tun": true, "help": true,
-	"login": true, "logout": true, "sync": true,
+	"login": true, "logout": true, "sync": true, "vpstunnel": true, "vtun": true,
 }
 
 func main() {
@@ -118,6 +119,11 @@ func runOwner(daemonMode, headless bool) {
 	appsSvc := apps.New()
 	defer appsSvc.Close()
 
+	// VPS Tunnel bo'limi: foydalanuvchining o'z VPS'idagi servergo-relay
+	// orqali reverse-tunnel — Cloudflare bo'limiga mustaqil.
+	vt := vpstunnel.New()
+	defer vt.Close()
+
 	// pm2: saqlangan jarayonlar ro'yxatini tiklaydi (`pm2 save` qilinganlar).
 	// Shu bilan pm2'ning o'z systemd/sudo sozlashiga hojat qolmaydi — boot'da
 	// faqat ServerGo demoni (systemd user service) ko'tariladi, qolganini
@@ -132,7 +138,7 @@ func runOwner(daemonMode, headless bool) {
 	}()
 
 	token := newToken()
-	srv, err := server.New(assets, token, tun, appsSvc)
+	srv, err := server.New(assets, token, tun, appsSvc, vt)
 	if err != nil {
 		log.Fatalf("serverni ishga tushirib bo'lmadi: %v", err)
 	}

@@ -20,6 +20,7 @@ import (
 	"servergo/internal/pm2"
 	"servergo/internal/sysmon"
 	"servergo/internal/tunnel"
+	"servergo/internal/vpstunnel"
 )
 
 // KillGrace — SIGTERM dan SIGKILL gacha kutish vaqti.
@@ -30,17 +31,18 @@ type Server struct {
 	assets  fs.FS
 	ln      net.Listener
 	baseURL string
-	tun     *tunnel.Service // nil bo'lishi mumkin — u holda bo'lim 503 qaytaradi
-	apps    *apps.Service   // nil bo'lishi mumkin — u holda bo'lim 503 qaytaradi
+	tun     *tunnel.Service    // nil bo'lishi mumkin — u holda bo'lim 503 qaytaradi
+	apps    *apps.Service      // nil bo'lishi mumkin — u holda bo'lim 503 qaytaradi
+	vt      *vpstunnel.Service // nil bo'lishi mumkin — u holda bo'lim 503 qaytaradi
 }
 
 // New — loopback'da tasodifiy portni band qiladi va serverni tayyorlaydi.
-func New(assets fs.FS, token string, tun *tunnel.Service, appsSvc *apps.Service) (*Server, error) {
+func New(assets fs.FS, token string, tun *tunnel.Service, appsSvc *apps.Service, vt *vpstunnel.Service) (*Server, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{token: token, assets: assets, ln: ln, tun: tun, apps: appsSvc}
+	s := &Server{token: token, assets: assets, ln: ln, tun: tun, apps: appsSvc, vt: vt}
 	s.baseURL = "http://" + ln.Addr().String()
 	return s, nil
 }
@@ -71,6 +73,7 @@ func (s *Server) Serve() error {
 	s.registerTunnelRoutes(mux)
 	s.registerAppRoutes(mux)
 	s.registerSyncRoutes(mux)
+	s.registerVPSTunnelRoutes(mux)
 
 	srv := &http.Server{
 		Handler:     mux,

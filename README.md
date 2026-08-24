@@ -114,6 +114,56 @@ bo'lsa va unda `tunnel:` yozilgan bo'lsa, `tunnel route dns` buyrug'i DNS
 yozuvini o'sha tunnelga yo'naltiradi — argumentdagiga emas. Natijada Error 1033.
 Shuning uchun barcha boshqaruv buyruqlariga bo'sh config beriladi.
 
+### VPS Tunnel
+
+Cloudflare Tunnel'ga mustaqil, alohida bo'lim — foydalanuvchining **o'z
+VPS'idagi** `servergo-relay` orqali reverse-tunnel. Sabab: Cloudflare Tunnel
+so'rovni Cloudflare'ning global edge serveriga olib boradi — O'zbekistondagi
+foydalanuvchilar uchun bu qo'shimcha kechikish beradi. O'zbekiston ichidagi
+(TAS-IX/UZ-IX) VPS orqali trafik mahalliy internet almashinuv nuqtasidan
+o'tadi, xalqaro yo'lga chiqmaydi.
+
+**Qanday ishlaydi**: ServerGo (lokal) VPS'dagi relay'ga chiquvchi TLS ulanish
+ochadi (bitta loyiha — bitta ulanish, portlarni ochish shart emas). Relay
+`:443`'da jamoatchilik so'rovlarini qabul qiladi, Host header bo'yicha mos
+ulanishga (yamux oqimi) yo'naltiradi; lokal tomon esa faqat xom baytlarni
+`localhost:PORT`ga ko'chiradi — HTTP semantikasi relay tomonida to'g'ri
+bajariladi. Sertifikatlar (jamoatchilik uchun) Let's Encrypt orqali avtomatik
+olinadi; control ulanish esa relay ishga tushganda generatsiya qilingan
+sertifikatning SHA256 barmoq izi (fingerprint) bilan tasdiqlanadi.
+
+**VPS'da o'rnatish** (bir marta):
+
+```
+git clone <shu repo> && cd servergo
+sudo RELAY_TOKEN=$(openssl rand -hex 32) ./scripts/install-relay.sh
+```
+
+Skript `servergo-relay`ni quradi, systemd service qilib o'rnatadi va
+fingerprint'ni ko'rsatadi (`journalctl -u servergo-relay | grep fingerprint`
+bilan ham qarash mumkin). So'ng:
+
+1. Firewall'da `80`, `443`, `9443` portlarini oching.
+2. DNS panelingizda **bitta wildcard yozuv** qo'shing:
+   `*.sizning-domeningiz.uz → VPS_IP`.
+3. Desktop ilovada **"VPS Tunnel"** bo'limi → **"Relay sozlamalari"**:
+   VPS manzili (`IP:9443`), token, fingerprint, wildcard domen.
+4. **"+ Yangi loyiha"** — port va subdomen kiritib **Run** bosing.
+
+Wildcard DNS faqat subdomenlarni qamraydi (domenning o'zini emas), shuning
+uchun bu bo'limda — Cloudflare bo'limidan farqli — subdomen kiritish shart.
+
+Buyruq qatoridan:
+
+```
+servergo vpstunnel relay <manzil:port> <token> <fingerprint> <wildcard-domen>
+servergo vpstunnel create <port> <subdomen> [-n nom] [-s] [-a]
+servergo vpstunnel list
+```
+
+Fayllar: `~/.config/servergo/vpstunnel/` (Cloudflare bo'limining
+`~/.config/servergo/servergo.db`sidan mustaqil).
+
 ## Talablar
 
 - Go 1.21+

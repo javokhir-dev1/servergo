@@ -19,6 +19,7 @@
         <button class="nav-btn" data-view="apps">Ilovalar</button>
         <button class="nav-btn" data-view="ram">RAM</button>
         <button class="nav-btn" data-view="tunnel">Tunnellar</button>
+        <button class="nav-btn" data-view="vpstunnel">VPS Tunnel</button>
         <button class="nav-btn" data-view="cloud">Bulut</button>
       </nav>
 
@@ -322,6 +323,66 @@
       </div>
     </div>
 
+    <!-- ============ VPS Tunnel bo'limi ============ -->
+    <div class="view" id="view-vpstunnel" hidden>
+      <div class="toolbar">
+        <input type="search" id="vt-search" class="search" placeholder="Loyiha nomi yoki subdomen bo'yicha qidirish…" />
+        <div class="spacer"></div>
+        <div class="totals" id="vt-meta"></div>
+        <button class="btn" id="vt-relay-edit">Relay sozlamalari</button>
+        <button class="btn" id="vt-applogs">Dastur loglari</button>
+        <button class="btn solid" id="vt-new">+ Yangi loyiha</button>
+      </div>
+
+      <!-- Sozlash — relay manzili/token/fingerprint/wildcard domen tayyor bo'lmaganda -->
+      <div class="setup" id="vt-setup" hidden></div>
+
+      <div class="layout" id="vt-layout">
+        <section class="table-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>Loyiha</th>
+                <th>Manzil</th>
+                <th class="num">Port</th>
+                <th>Holat</th>
+                <th>Avtostart</th>
+                <th class="actions-col">Amallar</th>
+              </tr>
+            </thead>
+            <tbody id="vt-rows"></tbody>
+          </table>
+          <div class="empty" id="vt-empty" hidden></div>
+        </section>
+
+        <aside class="detail" id="vt-detail" hidden>
+          <div class="detail-head">
+            <div>
+              <div class="detail-title" id="vt-d-name">—</div>
+              <div class="detail-sub" id="vt-d-sub">—</div>
+            </div>
+            <button class="icon-btn" id="vt-detail-close" title="Yopish">✕</button>
+          </div>
+
+          <div class="tabs">
+            <button class="tab active" data-vttab="info">Ma'lumot</button>
+            <button class="tab" data-vttab="logs">Loglar</button>
+          </div>
+
+          <div class="tab-body" id="vttab-info"></div>
+
+          <div class="tab-body log-body" id="vttab-logs" hidden>
+            <div class="log-toolbar">
+              <label class="auto"><input type="checkbox" id="vt-log-follow" checked /><span>Pastga ergashish</span></label>
+              <div class="spacer"></div>
+              <button class="btn small" id="vt-log-open">Log faylini ochish</button>
+            </div>
+            <pre class="log" id="vt-log"></pre>
+          </div>
+        </aside>
+      </div>
+    </div>
+
     <!-- ============ Ilovalar bo'limi ============ -->
     <div class="view" id="view-apps" hidden>
       <div class="toolbar">
@@ -445,6 +506,73 @@
         <div class="modal-actions">
           <button class="btn" id="form-cancel">Bekor qilish</button>
           <button class="btn solid" id="form-save">Yaratish</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ VPS Tunnel: loyiha formasi ============ -->
+    <div class="modal-backdrop" id="vt-form-modal" hidden>
+      <div class="modal wide" role="dialog" aria-modal="true">
+        <div class="modal-title" id="vt-form-title">Yangi loyiha</div>
+        <div class="form">
+          <label class="field">
+            <span>Loyiha nomi</span>
+            <input type="text" id="vf-name" class="search" placeholder="Masalan: Todo API" />
+          </label>
+          <div class="field-row">
+            <label class="field">
+              <span>Port</span>
+              <input type="number" id="vf-port" class="search" min="1" max="65535" placeholder="3000" />
+            </label>
+            <label class="field">
+              <span>Protokol (lokal servis)</span>
+              <select id="vf-protocol" class="select">
+                <option value="http">http</option>
+                <option value="https">https</option>
+              </select>
+            </label>
+          </div>
+          <label class="field">
+            <span>Subdomen</span>
+            <input type="text" id="vf-sub" class="search" placeholder="todo" />
+          </label>
+          <div class="preview" id="vf-preview">—</div>
+          <label class="auto"><input type="checkbox" id="vf-autostart" /><span>Dastur ochilganda avtomatik ulansin</span></label>
+          <div class="form-note" id="vf-note" hidden></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" id="vt-form-cancel">Bekor qilish</button>
+          <button class="btn solid" id="vt-form-save">Yaratish</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ VPS Tunnel: relay sozlamalari ============ -->
+    <div class="modal-backdrop" id="vt-relay-modal" hidden>
+      <div class="modal wide" role="dialog" aria-modal="true">
+        <div class="modal-title">Relay sozlamalari</div>
+        <div class="form">
+          <label class="field">
+            <span>Relay manzili (host:port)</span>
+            <input type="text" id="vr-addr" class="search" placeholder="1.2.3.4:9443" />
+          </label>
+          <label class="field">
+            <span>Token</span>
+            <input type="text" id="vr-token" class="search" placeholder="RELAY_TOKEN" />
+          </label>
+          <label class="field">
+            <span>Fingerprint (relay ishga tushganda konsolda chiqadi)</span>
+            <input type="text" id="vr-fingerprint" class="search mono" placeholder="sha256 fingerprint" />
+          </label>
+          <label class="field">
+            <span>Wildcard domen</span>
+            <input type="text" id="vr-wildcard" class="search" placeholder="masalan: vps.domeningiz.uz" />
+          </label>
+          <div class="form-note" id="vr-note" hidden></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" id="vt-relay-cancel">Bekor qilish</button>
+          <button class="btn solid" id="vt-relay-save">Saqlash</button>
         </div>
       </div>
     </div>

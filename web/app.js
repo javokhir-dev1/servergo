@@ -56,6 +56,19 @@ const api = {
   tunEvents: (since) => apiGet(`/api/tunnel/events?since=${Number(since) || 0}`),
   tunAppLogs: () => apiGet('/api/tunnel/applogs'),
 
+  // VPS Tunnel bo'limi
+  vtSetup: () => apiGet('/api/vpstunnel/setup'),
+  vtRelaySet: (addr, token, fingerprint, wildcardDomain) =>
+    apiPost('/api/vpstunnel/relay', { addr, token, fingerprint, wildcardDomain }),
+  vtProjects: () => apiGet('/api/vpstunnel/projects'),
+  vtCreate: (input) => apiPost('/api/vpstunnel/project/create', input),
+  vtUpdate: (id, input) => apiPost('/api/vpstunnel/project/update', { ...input, id }),
+  vtAction: (type, id) => apiPost('/api/vpstunnel/project/action', { type, id }),
+  vtDelete: (id) => apiPost('/api/vpstunnel/project/delete', { id }),
+  vtLogs: (id) => apiGet(`/api/vpstunnel/project/logs?id=${encodeURIComponent(id)}`),
+  vtCheckPort: (port) => apiGet(`/api/vpstunnel/checkport?port=${Number(port)}`),
+  vtAppLogs: () => apiGet('/api/vpstunnel/applogs'),
+
   // Ilovalar bo'limi
   appsList: () => apiGet('/api/apps/list'),
   appsCreate: (input) => apiPost('/api/apps/create', input),
@@ -105,6 +118,15 @@ const state = {
   tunSeq: 0,
   tunEditingId: null, // null — yangi loyiha, aks holda tahrir
   tunPending: null,   // DNS band bo'lganda "almashtirish" uchun saqlangan forma
+  // VPS Tunnel bo'limi
+  vtSetup: null,
+  vtProjects: [],
+  vtSearch: '',
+  vtSelectedId: null,
+  vtTab: 'info',
+  vtLogs: [],
+  vtError: null,
+  vtEditingId: null,
   // Ilovalar bo'limi
   appList: [],
   appSearch: '',
@@ -321,6 +343,7 @@ function setView(view) {
   $('view-apps').hidden = view !== 'apps';
   $('view-ram').hidden = view !== 'ram';
   $('view-tunnel').hidden = view !== 'tunnel';
+  $('view-vpstunnel').hidden = view !== 'vpstunnel';
   $('view-cloud').hidden = view !== 'cloud';
   document.querySelectorAll('.nav-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.view === view);
@@ -1049,7 +1072,10 @@ document.addEventListener('keydown', (e) => {
     if (!$('prompt-modal').hidden) closePrompt();
     else if (!$('modal').hidden) closeModal(false);
     else if (!$('form-modal').hidden) closeProjectForm();
+    else if (!$('vt-form-modal').hidden) closeVTProjectForm();
+    else if (!$('vt-relay-modal').hidden) closeVTRelayForm();
     else if (state.view === 'tunnel') closeTunDetail();
+    else if (state.view === 'vpstunnel') closeVTDetail();
     else closeDetail();
     return;
   }
@@ -1066,6 +1092,16 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !$('form-modal').hidden) {
     e.preventDefault();
     saveProjectForm();
+    return;
+  }
+  if (e.key === 'Enter' && !$('vt-form-modal').hidden) {
+    e.preventDefault();
+    saveVTProjectForm();
+    return;
+  }
+  if (e.key === 'Enter' && !$('vt-relay-modal').hidden) {
+    e.preventDefault();
+    saveVTRelayForm();
     return;
   }
   if (e.key === 'r' && e.ctrlKey) {
@@ -1582,6 +1618,428 @@ async function fixTunDNS() {
   runDiagnose();
 }
 
+/* ============ VPS Tunnel bo'limi ============
+ * Cloudflare'siz, foydalanuvchining o'z VPS'idagi servergo-relay orqali
+ * reverse-tunnel. Tunnellar bo'limi bilan bir xil naqsh, lekin mustaqil:
+ * login-sehrgari yo'q — bitta martalik relay manzili/token/fingerprint/
+ * wildcard-domen sozlamasi yetarli, DNS diagnostikasi yo'q (wildcard DNS
+ * qo'lda, bir marta sozlanadi). */
+
+const VT_STATUS = {
+  stopped: "to'xtagan",
+  starting: 'ulanmoqda',
+  running: 'ishlamoqda',
+  error: 'xato',
+};
+
+async function refreshVPSTunnel() {
+  const [setupRes, projRes] = await Promise.all([api.vtSetup(), api.vtProjects()]);
+
+  state.vtError = setupRes.ok ? null : setupRes.error;
+  state.vtSetup = setupRes.ok ? setupRes.data : null;
+  state.vtProjects = projRes.ok ? projRes.data || [] : [];
+
+  renderVPSTunnel();
+  if (state.vtSelectedId && state.vtTab === 'logs') await loadVTLogs();
+}
+
+function renderVPSTunnel() {
+  const s = state.vtSetup;
+  const ready = !!(s && s.ready);
+
+  $('vt-setup').hidden = ready;
+  $('vt-layout').hidden = !ready;
+  $('vt-new').disabled = !ready;
+  $('vt-search').disabled = !ready;
+
+  if (!ready) {
+    renderVTSetup();
+    $('vt-meta').textContent = '';
+    return;
+  }
+  renderVTProjects();
+}
+
+function renderVTSetup() {
+  const s = state.vtSetup;
+  const box = $('vt-setup');
+  if (state.vtError || !s) {
+    box.innerHTML = `<div class="setup-head"><h2>VPS Tunnel bo'limi ishga tushmadi</h2>
+       <p>${esc(state.vtError || 'Noma\'lum xato')}</p></div>`;
+    return;
+  }
+  if (s.fatalError) {
+    box.innerHTML = `<div class="setup-head"><h2>VPS Tunnel bo'limi ishga tushmadi</h2><p>${esc(s.fatalError)}</p></div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div class="setup-head">
+      <h2>VPS Tunnel'ni sozlash</h2>
+      <p>O'zingizning VPS'ingizda <code>servergo-relay</code>ni ishga tushiring
+         (qarang: README), so'ng uning manzili, tokeni va sertifikat
+         barmoq izini (fingerprint) shu yerga kiriting. Bundan tashqari
+         DNS panelingizda bitta wildcard yozuv qo'shishingiz kerak:
+         <code>*.sizning-domeningiz.uz → VPS_IP</code>.</p>
+      <div class="step-actions">
+        <button class="btn small solid" data-vtsetup="relay">Relay sozlamalarini kiritish</button>
+      </div>
+      ${s.relayAddr ? `<p class="form-note">Hozirgi manzil: <code>${esc(s.relayAddr)}</code>${s.wildcardDomain ? ` · wildcard: <code>*.${esc(s.wildcardDomain)}</code>` : ''}</p>` : ''}
+    </div>`;
+}
+
+function visibleVTProjects() {
+  const q = state.vtSearch.trim().toLowerCase();
+  if (!q) return state.vtProjects;
+  return state.vtProjects.filter(
+    (p) => p.name.toLowerCase().includes(q) || p.subdomain.toLowerCase().includes(q)
+  );
+}
+
+function renderVTProjects() {
+  const list = visibleVTProjects();
+  const running = state.vtProjects.filter((p) => p.status === 'running').length;
+  $('vt-meta').textContent = `${state.vtProjects.length} ta loyiha · ${running} tasi ishlamoqda`;
+
+  $('vt-rows').innerHTML = list
+    .map((p) => {
+      const sel = p.id === state.vtSelectedId ? ' selected' : '';
+      const isRunning = p.status === 'running' || p.status === 'starting';
+      return `<tr class="row${sel}" data-vtid="${esc(p.id)}">
+        <td class="name">${esc(p.name)}</td>
+        <td class="url"><a href="#" data-vtopen="${esc(p.url)}">${esc(hostFor(p.subdomain, p.baseDomain))}</a></td>
+        <td class="num dim">${p.port}</td>
+        <td><span class="status ${esc(p.status)}">${esc(VT_STATUS[p.status] || p.status)}</span></td>
+        <td><span class="pill ${p.autostart ? 'on' : ''}">${p.autostart ? 'yoqilgan' : "o'chirilgan"}</span></td>
+        <td class="actions">
+          ${isRunning
+            ? `<button class="act" data-vtact="restart" data-vtid="${esc(p.id)}" title="Qayta ulanish">↻ Restart</button>
+               <button class="act stop" data-vtact="stop" data-vtid="${esc(p.id)}" title="To'xtatish">■ Stop</button>`
+            : `<button class="act start" data-vtact="start" data-vtid="${esc(p.id)}" title="Ulanish">▶ Run</button>`}
+          <button class="act" data-vtact="edit" data-vtid="${esc(p.id)}" title="Tahrirlash">✎ Tahrir</button>
+          <button class="act del" data-vtact="delete" data-vtid="${esc(p.id)}" title="O'chirish">🗑 O'chirish</button>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  if (list.length === 0) {
+    $('vt-empty').hidden = false;
+    $('vt-empty').textContent = state.vtProjects.length === 0
+      ? "Hali loyiha yo'q.\n\n\"+ Yangi loyiha\" tugmasi bilan birinchi tunnelni yarating."
+      : 'Qidiruvga mos loyiha topilmadi.';
+  } else {
+    $('vt-empty').hidden = true;
+  }
+
+  if (state.vtSelectedId && !state.vtProjects.some((p) => p.id === state.vtSelectedId)) {
+    closeVTDetail();
+  } else if (state.vtSelectedId) {
+    renderVTDetail();
+  }
+}
+
+function selectedVTProject() {
+  return state.vtProjects.find((p) => p.id === state.vtSelectedId) || null;
+}
+
+function renderVTDetail() {
+  const p = selectedVTProject();
+  if (!p) return;
+  $('vt-d-name').textContent = p.name;
+  $('vt-d-sub').textContent = `${VT_STATUS[p.status] || p.status} · localhost:${p.port} → ${hostFor(p.subdomain, p.baseDomain)}`;
+
+  $('vttab-info').innerHTML = `
+    <div class="section-title">Holat</div>
+    <dl class="kv">
+      <dt>Holat</dt><dd><span class="status ${esc(p.status)}">${esc(VT_STATUS[p.status] || p.status)}</span></dd>
+      <dt>Manzil</dt><dd><a href="#" data-vtopen="${esc(p.url)}">${esc(p.url)}</a></dd>
+      <dt>Lokal port</dt><dd>${p.port} (${esc(p.protocol)})</dd>
+      <dt>Avtostart</dt><dd>${p.autostart ? 'yoqilgan' : "o'chirilgan"}</dd>
+      ${p.lastError ? `<dt>Oxirgi xato</dt><dd>${esc(p.lastError)}</dd>` : ''}
+      <dt>Yaratilgan</dt><dd>${formatDate(p.createdAt)}</dd>
+    </dl>`;
+}
+
+async function loadVTLogs() {
+  const p = selectedVTProject();
+  if (!p) return;
+  const res = await api.vtLogs(p.id);
+  if (!res.ok) {
+    $('vt-log').textContent = res.error;
+    return;
+  }
+  state.vtLogs = res.data || [];
+  const box = $('vt-log');
+  const follow = $('vt-log-follow').checked;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.textContent = state.vtLogs.length ? state.vtLogs.join('\n') : "(log bo'sh — Run bosilgandan keyin to'ladi)";
+  if (follow || atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function openVTDetail(id) {
+  state.vtSelectedId = id;
+  $('vt-detail').hidden = false;
+  renderVTDetail();
+  if (state.vtTab === 'logs') loadVTLogs();
+  renderVTProjects();
+}
+
+function closeVTDetail() {
+  state.vtSelectedId = null;
+  $('vt-detail').hidden = true;
+  document.querySelectorAll('#vt-rows tr.selected').forEach((tr) => tr.classList.remove('selected'));
+}
+
+function setVTTab(tab) {
+  state.vtTab = tab;
+  document.querySelectorAll('.tab[data-vttab]').forEach((t) => t.classList.toggle('active', t.dataset.vttab === tab));
+  $('vttab-info').hidden = tab !== 'info';
+  $('vttab-logs').hidden = tab !== 'logs';
+  if (tab === 'logs') loadVTLogs();
+}
+
+async function vtAct(type, id) {
+  const p = state.vtProjects.find((x) => x.id === id);
+  if (!p) return;
+
+  if (type === 'delete') {
+    const okd = await confirmDialog({
+      title: "Loyihani o'chirish",
+      message: `"${p.name}" loyihasi o'chirilsinmi?`,
+      detail: `Ulanish to'xtatiladi va lokal fayllar tozalanadi.\n\n${p.url}\n\nBuni qaytarib bo'lmaydi.`,
+      confirmLabel: "O'chirish",
+    });
+    if (!okd) return;
+    state.busy = true;
+    const res = await api.vtDelete(id);
+    state.busy = false;
+    if (!res.ok) toast(`Xato: ${res.error}`, 'error');
+    else {
+      toast(`"${p.name}" o'chirildi`, 'success');
+      if (state.vtSelectedId === id) closeVTDetail();
+    }
+    await refreshVPSTunnel();
+    return;
+  }
+
+  if (type === 'edit') {
+    openVTProjectForm(id);
+    return;
+  }
+
+  state.busy = true;
+  const res = await api.vtAction(type, id);
+  state.busy = false;
+  if (!res.ok) toast(`"${p.name}" — xato: ${res.error}`, 'error');
+  else {
+    const label = { start: 'ulanmoqda', stop: "to'xtatildi", restart: 'qayta ulanmoqda' }[type];
+    toast(`"${p.name}" ${label}`, 'success');
+  }
+  await refreshVPSTunnel();
+}
+
+/* ---- VPS Tunnel: loyiha formasi ---- */
+
+function openVTProjectForm(id) {
+  const s = state.vtSetup;
+  if (!s || !s.ready) return;
+  state.vtEditingId = id || null;
+
+  const p = id ? state.vtProjects.find((x) => x.id === id) : null;
+  $('vt-form-title').textContent = p ? 'Loyihani tahrirlash' : 'Yangi loyiha';
+  $('vt-form-save').textContent = p ? 'Saqlash' : 'Yaratish';
+  $('vf-name').value = p ? p.name : '';
+  $('vf-port').value = p ? p.port : '';
+  $('vf-sub').value = p ? p.subdomain : '';
+  $('vf-protocol').value = p ? p.protocol : 'http';
+  $('vf-autostart').checked = p ? p.autostart : false;
+
+  setVTFormNote('');
+  updateVTFormPreview();
+  $('vt-form-modal').hidden = false;
+  $('vf-name').focus();
+}
+
+function closeVTProjectForm() {
+  $('vt-form-modal').hidden = true;
+  state.vtEditingId = null;
+}
+
+function setVTFormNote(msg, kind = '') {
+  const n = $('vf-note');
+  n.textContent = msg || '';
+  n.className = `form-note ${kind}`;
+  n.hidden = !msg;
+}
+
+function updateVTFormPreview() {
+  const sub = $('vf-sub').value.trim().toLowerCase();
+  const dom = (state.vtSetup && state.vtSetup.wildcardDomain) || '';
+  const port = $('vf-port').value.trim();
+  $('vf-preview').textContent =
+    dom && sub ? `localhost:${port || '?'} → https://${hostFor(sub, dom)}` : '—';
+}
+
+function vtFormInput() {
+  return {
+    name: $('vf-name').value.trim(),
+    port: Number($('vf-port').value),
+    subdomain: $('vf-sub').value.trim().toLowerCase(),
+    protocol: $('vf-protocol').value,
+    autostart: $('vf-autostart').checked,
+  };
+}
+
+async function saveVTProjectForm() {
+  const input = vtFormInput();
+  const id = state.vtEditingId;
+
+  $('vt-form-save').disabled = true;
+  setVTFormNote(id ? 'Saqlanmoqda…' : 'Yaratilmoqda…');
+
+  const res = id ? await api.vtUpdate(id, input) : await api.vtCreate(input);
+  $('vt-form-save').disabled = false;
+
+  if (!res.ok) {
+    setVTFormNote(res.error, 'error');
+    return;
+  }
+
+  toast(id ? 'Loyiha saqlandi' : `"${input.name}" yaratildi`, 'success');
+  closeVTProjectForm();
+  await refreshVPSTunnel();
+
+  const portRes = await api.vtCheckPort(input.port);
+  if (portRes.ok && portRes.data === false) {
+    toast(`Eslatma: localhost:${input.port} da hozir hech narsa javob bermayapti`, 'error');
+  }
+}
+
+/* ---- VPS Tunnel: relay sozlamalari ---- */
+
+function openVTRelayForm() {
+  const s = state.vtSetup;
+  $('vr-addr').value = (s && s.relayAddr) || '';
+  $('vr-token').value = '';
+  $('vr-fingerprint').value = '';
+  $('vr-wildcard').value = (s && s.wildcardDomain) || '';
+  $('vr-note').hidden = true;
+  $('vt-relay-modal').hidden = false;
+  $('vr-addr').focus();
+}
+
+function closeVTRelayForm() {
+  $('vt-relay-modal').hidden = true;
+}
+
+async function saveVTRelayForm() {
+  const addr = $('vr-addr').value.trim();
+  const token = $('vr-token').value.trim();
+  const fingerprint = $('vr-fingerprint').value.trim();
+  const wildcardDomain = $('vr-wildcard').value.trim();
+
+  $('vt-relay-save').disabled = true;
+  const res = await api.vtRelaySet(addr, token, fingerprint, wildcardDomain);
+  $('vt-relay-save').disabled = false;
+
+  if (!res.ok) {
+    const n = $('vr-note');
+    n.textContent = res.error;
+    n.className = 'form-note error';
+    n.hidden = false;
+    return;
+  }
+  toast('Relay sozlamalari saqlandi', 'success');
+  closeVTRelayForm();
+  await refreshVPSTunnel();
+}
+
+/* ---- VPS Tunnel: dastur loglari ---- */
+
+async function openVTAppLogs() {
+  const res = await api.vtAppLogs();
+  if (!res.ok) {
+    toast(`Loglarni olishda xato: ${res.error}`, 'error');
+    return;
+  }
+  const lines = (res.data || [])
+    .slice(-200)
+    .map((e) => `${e.time} [${e.level}] ${e.msg}`)
+    .join('\n');
+  await confirmDialog({
+    title: "VPS Tunnel bo'limi loglari",
+    message: state.vtSetup && state.vtSetup.logDir ? `Fayllar: ${state.vtSetup.logDir}` : '',
+    detail: lines || "Log yo'q",
+    confirmLabel: 'Yopish',
+  });
+}
+
+/* ---- VPS Tunnel: hodisalar ---- */
+
+$('vt-rows').addEventListener('click', (e) => {
+  const link = e.target.closest('[data-vtopen]');
+  if (link) {
+    e.preventDefault();
+    api.openPath(link.dataset.vtopen);
+    return;
+  }
+  const actBtn = e.target.closest('[data-vtact]');
+  if (actBtn) {
+    e.stopPropagation();
+    vtAct(actBtn.dataset.vtact, actBtn.dataset.vtid);
+    return;
+  }
+  const row = e.target.closest('tr[data-vtid]');
+  if (!row) return;
+  if (state.vtSelectedId === row.dataset.vtid) closeVTDetail();
+  else openVTDetail(row.dataset.vtid);
+});
+
+$('vt-detail').addEventListener('click', (e) => {
+  const link = e.target.closest('[data-vtopen]');
+  if (link) {
+    e.preventDefault();
+    api.openPath(link.dataset.vtopen);
+  }
+});
+
+$('vt-detail-close').addEventListener('click', closeVTDetail);
+document.querySelectorAll('.tab[data-vttab]').forEach((t) => {
+  t.addEventListener('click', () => setVTTab(t.dataset.vttab));
+});
+
+$('vt-log-open').addEventListener('click', () => {
+  const s = state.vtSetup;
+  const p = selectedVTProject();
+  if (s && s.logDir && p) api.openPath(`${s.logDir}/${p.id}.log`);
+});
+
+$('vt-search').addEventListener('input', (e) => {
+  state.vtSearch = e.target.value;
+  renderVTProjects();
+});
+
+$('vt-new').addEventListener('click', () => openVTProjectForm(null));
+$('vt-applogs').addEventListener('click', openVTAppLogs);
+$('vt-setup').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-vtsetup]');
+  if (btn && btn.dataset.vtsetup === 'relay') openVTRelayForm();
+});
+$('vt-relay-edit').addEventListener('click', openVTRelayForm);
+
+$('vt-form-cancel').addEventListener('click', closeVTProjectForm);
+$('vt-form-save').addEventListener('click', saveVTProjectForm);
+$('vt-form-modal').addEventListener('click', (e) => {
+  if (e.target === $('vt-form-modal')) closeVTProjectForm();
+});
+['vf-sub', 'vf-port'].forEach((id) => $(id).addEventListener('input', updateVTFormPreview));
+
+$('vt-relay-cancel').addEventListener('click', closeVTRelayForm);
+$('vt-relay-save').addEventListener('click', saveVTRelayForm);
+$('vt-relay-modal').addEventListener('click', (e) => {
+  if (e.target === $('vt-relay-modal')) closeVTRelayForm();
+});
+
 /* ============ Ilovalar bo'limi ============
  * pm2'ga bog'liq bo'lmagan, ServerGo'ning o'z jarayon boshqaruvchisi:
  * buyruq + ishchi papka, "Avtostart" bazada saqlanadi, qulab tushsa
@@ -1958,6 +2416,7 @@ function refreshActive() {
   if (state.view === 'apps') return refreshApps();
   if (state.view === 'ram') return refreshRam();
   if (state.view === 'cloud') return refreshCloud();
+  if (state.view === 'vpstunnel') return refreshVPSTunnel();
   return refreshTunnel();
 }
 

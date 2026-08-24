@@ -38,6 +38,8 @@ func Run(args []string) int {
 		runErr = cmdApps(c, rest)
 	case "tunnel", "tun":
 		runErr = cmdTunnel(c, rest)
+	case "vpstunnel", "vtun":
+		runErr = cmdVPSTunnel(c, rest)
 	case "login":
 		runErr = cmdLogin(c, rest)
 	case "logout":
@@ -108,6 +110,20 @@ Tunnellar:
   tunnel add-domain <domen>
   tunnel remove-domain <domen>
   tunnel active-domain <domen>        faol domenni belgilash
+
+VPS Tunnel (o'z VPS'ingiz orqali, Cloudflare'siz):
+  vpstunnel [list]                    loyihalar ro'yxati (-w — jonli kuzatish)
+  vpstunnel create <port> <subdomen>   port'ni VPS orqali internetga chiqarish
+    [-n nom] [-s] [-a]                 -n: nom (standart: subdomen)
+                                        -s: lokal servis https (standart: http)
+                                        -a: avtostart yoqish
+  vpstunnel start   <id|nom>
+  vpstunnel stop    <id|nom>
+  vpstunnel restart <id|nom>
+  vpstunnel delete  <id|nom>
+  vpstunnel logs    <id|nom>
+  vpstunnel relay <manzil:port> <token> <fingerprint> <wildcard-domen>
+                                       relay ulanishini sozlash (bir marta)
 
 Bulutli sinxronizatsiya:
   login <email>                       backend'ga kirish (parol so'raladi)
