@@ -30,10 +30,18 @@ const maxHandshakeBytes = 4096
 // bir xil formatda bo'lishi SHART (4-bayt uzunlik + JSON, io.ReadFull bilan
 // aniq shuncha bayt o'qiladi — bufio ishlatilmaydi, aks holda undan keyingi
 // yamux freym baytlari "yeb qo'yilishi" mumkin).
+//
+// Format JSON bo'lgani uchun yangi maydon qo'shish moslikni buzmaydi: eski
+// agent ConnIndex'siz yuborsa, bu yerda 0 bo'lib qoladi (u faqat log uchun).
 type Handshake struct {
 	Token     string `json:"token"`
 	ProjectID string `json:"project_id"`
 	Hostname  string `json:"hostname"`
+
+	// ConnIndex — shu loyihaning nechanchi ulanishi (0 dan boshlab). Bir
+	// loyiha bir nechta mustaqil ulanish ochadi; indeks faqat loglarni
+	// o'qiy oladigan qilish uchun kerak, marshrutlashga ta'sir qilmaydi.
+	ConnIndex int `json:"conn_index"`
 }
 
 var hostnameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
@@ -42,16 +50,24 @@ var hostnameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([
 // nusxasi bilan bir xil: internal/vpstunnel/client/client.go.
 const tcpKeepAlive = 15 * time.Second
 
-// yamuxConfig — lokal tomondagi (internal/vpstunnel/client/client.go)
-// nusxasi bilan BIR XIL bo'lishi shart: ikkala tomon ham mustaqil ravishda
-// o'z keepalive jadvali bo'yicha ping yuboradi, biror tomon standart (10s)
-// pong kutish vaqtida javob ololmasa sessiyani o'zi yopadi — shu sabab bu
-// qiymat faqat client'da uzaytirilsa yetarli emas, relay ham xuddi shunday
-// bardoshli bo'lishi kerak.
+// keepAliveInterval / stallTolerance — lokal tomondagi
+// (internal/vpstunnel/client/client.go) nusxasi bilan BIR XIL bo'lishi SHART:
+// ikkala tomon ham mustaqil ravishda o'z keepalive jadvali bo'yicha ping
+// yuboradi va javob ololmasa sessiyani o'zi yopadi. Shu sabab chidamlilikni
+// faqat bir tomonda oshirish foydasiz — amalda sessiyani ko'pincha aynan
+// relay yopar edi.
+//
+// stallTolerance nima uchun 2 daqiqa ekani va qanday o'lchangani lokal
+// tomondagi izohda batafsil yozilgan.
+const (
+	keepAliveInterval = 15 * time.Second
+	stallTolerance    = 120 * time.Second
+)
+
 func yamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
-	cfg.KeepAliveInterval = 15 * time.Second
-	cfg.ConnectionWriteTimeout = 30 * time.Second
+	cfg.KeepAliveInterval = keepAliveInterval
+	cfg.ConnectionWriteTimeout = stallTolerance
 	return cfg
 }
 
@@ -146,10 +162,11 @@ func handleConn(conn net.Conn, token string, reg *registry.Registry) {
 		return
 	}
 
-	reg.Register(hostname, sess)
-	log.Printf("control: agent ulandi — %s (loyiha=%s, %s)", hostname, hs.ProjectID, conn.RemoteAddr())
+	total := reg.Register(hostname, sess)
+	log.Printf("control: agent ulandi — %s (loyiha=%s, ulanish #%d, pool=%d, %s)",
+		hostname, hs.ProjectID, hs.ConnIndex+1, total, conn.RemoteAddr())
 
 	<-sess.CloseChan()
-	reg.Unregister(hostname, sess)
-	log.Printf("control: agent uzildi — %s", hostname)
+	left := reg.Unregister(hostname, sess)
+	log.Printf("control: agent uzildi — %s (ulanish #%d, pool=%d)", hostname, hs.ConnIndex+1, left)
 }

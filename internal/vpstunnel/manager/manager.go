@@ -7,6 +7,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -19,10 +20,42 @@ import (
 )
 
 const (
-	maxRestarts  = 3
 	healthPeriod = 10 * time.Second
 	maxRingLines = 500
 	maxLogFileMB = 10
+
+	// Qayta ulanish hech qachon to'xtamaydi — foydalanuvchi Stop bosmaguncha
+	// nazoratchi (supervise) ishlab turadi. Kutish vaqti eksponensial o'sadi,
+	// lekin maxBackoff bilan cheklanadi: noutbuk uyquda yotgan yoki internet
+	// yarim soatga uzilgan holatda ham tunnel o'zi tiklanadi.
+	initialBackoff = 1 * time.Second
+	maxBackoff     = 30 * time.Second
+
+	// errorAfterFails — shuncha ketma-ket muvaffaqiyatsiz urinishdan keyin
+	// ulanish "yiqilgan" deb belgilanadi (qayta urinish baribir davom etadi).
+	// Loyiha "error" holatiga faqat POOL'dagi hamma ulanish shunday bo'lganda
+	// o'tadi — qarang: proc.derive.
+	errorAfterFails = 3
+
+	// connsPerProject — har bir loyiha uchun relay'ga ochiladigan MUSTAQIL
+	// ulanishlar soni. cloudflared ham aynan shu tamoyilda ishlaydi (4 ta
+	// ulanish, kamida 2 xil datacentrga): bittasi uzilganda yoki
+	// sekinlashganda trafik qolganlari orqali ketaveradi va tashrifchi
+	// uzilishni umuman sezmaydi.
+	//
+	// Nega 2: bitta relay uchun asosiy foyda birinchi qo'shimcha ulanishdan
+	// keladi — yamux'da bitta TCP ustidagi BARCHA oqimlar bir-birini kutadi
+	// (head-of-line blocking), ya'ni bitta so'rov sekinlashsa qolganlari ham
+	// sekinlashadi. Ikkinchi ulanish shu bog'liqlikni uzadi. Undan keyingilari
+	// bir xil VPS'ga borgani uchun kam narsa qo'shadi — chinakam zaxira
+	// ikkinchi relay bilan paydo bo'ladi.
+	connsPerProject = 2
+
+	// connStagger — pool'dagi ulanishlarning boshlanish oralig'i. Bir vaqtda
+	// ochilgan ulanishlar bir vaqtda uzilishga ham moyil bo'ladi (bir xil
+	// keepalive jadvali, bir xil NAT yozuvi yoshi) — bu esa pool'ning ma'nosini
+	// yo'qotardi.
+	connStagger = 3 * time.Second
 )
 
 // EmitFunc — UI'ga hodisa yuborish.
@@ -62,13 +95,56 @@ func (r *ring) all() []string {
 	return out
 }
 
+// proc — bitta loyihaning ulanishlar pool'i. Loyiha to'xtatilgunga qadar
+// m.procs xaritasida qoladi — qayta ulanish kutuvi paytida ham. Shu sababli
+// Start() takroriy nusxa yaratib yubormaydi va UI loyihani "ishlayotgan" deb
+// ko'rsatishda davom etadi.
 type proc struct {
-	cancel   context.CancelFunc
-	desired  bool
-	restarts int
-	logs     *ring
-	logFile  *os.File
-	done     chan struct{}
+	cancel  context.CancelFunc
+	desired bool
+	logs    *ring
+	done    chan struct{} // pool'dagi BARCHA nazoratchilar tugaganda yopiladi
+
+	mu      sync.Mutex
+	up      []bool // har bir ulanish hozir tirikmi
+	failing []bool // har bir ulanish ketma-ket errorAfterFails marta yiqildimi
+	status  string // oxirgi e'lon qilingan status (takroriy emit'ni bostirish)
+	lastErr string
+}
+
+// derive — pool holatidan loyihaning umumiy statusini hisoblaydi va uni
+// eslab qoladi. changed=false bo'lsa status o'zgarmagan, ya'ni UI'ga qayta
+// yubormaslik kerak — aks holda ikkita ulanish navbatma-navbat qayta
+// ulanayotganda loglar bir xil xabar bilan to'lib ketardi.
+//
+// Asosiy qoida: kamida BITTA ulanish tirik bo'lsa, loyiha ishlayapti —
+// qolganlarining uzilishi tashrifchiga ko'rinmaydi, aynan shu pool'ning
+// maqsadi. "error" faqat hamma ulanish yiqilganda beriladi.
+//
+// pr.mu ushlab turilgan holda chaqiriladi.
+func (pr *proc) derive(errMsg string) (status, lastErr string, changed bool) {
+	up, failing := 0, 0
+	for i := range pr.up {
+		if pr.up[i] {
+			up++
+		}
+		if pr.failing[i] {
+			failing++
+		}
+	}
+	switch {
+	case up > 0:
+		status, lastErr = "running", ""
+	case failing == len(pr.failing) && len(pr.failing) > 0:
+		status, lastErr = "error", errMsg
+	default:
+		status, lastErr = "starting", ""
+	}
+	if status == pr.status && lastErr == pr.lastErr {
+		return status, lastErr, false
+	}
+	pr.status, pr.lastErr = status, lastErr
+	return status, lastErr, true
 }
 
 type Manager struct {
@@ -129,90 +205,194 @@ func (m *Manager) Start(p store.Project) error {
 		return fmt.Errorf("relay sozlanmagan — avval manzil/token/fingerprint kiriting")
 	}
 	applog.Info("[%s] '%s' ulanmoqda (localhost:%d → %s)", short(p.ID), p.Name, p.Port, p.Hostname())
-	return m.spawn(p, relay, 0)
-}
 
-func (m *Manager) spawn(p store.Project, relay RelayConfig, restarts int) error {
 	ctx, cancel := context.WithCancel(context.Background())
-
-	logPath := filepath.Join(store.LogDir(), p.ID+".log")
-	rotateIfBig(logPath)
-	lf, _ := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-
 	pr := &proc{
-		cancel:   cancel,
-		desired:  true,
-		restarts: restarts,
-		logs:     &ring{},
-		logFile:  lf,
-		done:     make(chan struct{}),
+		cancel:  cancel,
+		desired: true,
+		logs:    &ring{},
+		done:    make(chan struct{}),
+		up:      make([]bool, connsPerProject),
+		failing: make([]bool, connsPerProject),
+		status:  "starting",
 	}
 	m.mu.Lock()
 	m.procs[p.ID] = pr
 	m.mu.Unlock()
 	m.setStatus(p.ID, "starting", "")
 
-	logLine := func(line string) {
+	go m.runPool(ctx, pr, p)
+	return nil
+}
+
+// syncStatus — pool holatini qayta hisoblab, o'zgargan bo'lsagina e'lon qiladi.
+func (m *Manager) syncStatus(id string, pr *proc, errMsg string) {
+	pr.mu.Lock()
+	status, lastErr, changed := pr.derive(errMsg)
+	pr.mu.Unlock()
+	if changed {
+		m.setStatus(id, status, lastErr)
+	}
+}
+
+// runPool — loyihaning barcha ulanishlarini ko'taradi va hammasi tugaguncha
+// kutadi. Log fayli bitta — pool'dagi ulanishlar unga "[#N]" prefiksi bilan
+// yozadi, shunda qaysi ulanish nima qilayotgani ko'rinib turadi.
+func (m *Manager) runPool(ctx context.Context, pr *proc, p store.Project) {
+	defer close(pr.done)
+
+	logPath := filepath.Join(store.LogDir(), p.ID+".log")
+	rotateIfBig(logPath)
+	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if logFile != nil {
+		defer logFile.Close()
+	}
+	var logMu sync.Mutex
+	logLine := func(idx int, line string) {
+		line = fmt.Sprintf("[#%d] %s", idx+1, line)
+		logMu.Lock()
 		pr.logs.add(line)
-		if pr.logFile != nil {
-			fmt.Fprintln(pr.logFile, line)
+		if logFile != nil {
+			fmt.Fprintln(logFile, line)
 		}
+		logMu.Unlock()
 		m.emit("vt_project_log", map[string]string{"id": p.ID, "line": line})
 	}
 
-	cfg := client.Config{
-		RelayAddr:   relay.Addr,
-		Fingerprint: relay.Fingerprint,
-		Token:       relay.Token,
-		ProjectID:   p.ID,
-		Hostname:    p.Hostname(),
-		LocalPort:   p.Port,
-	}
-
-	go func() {
-		defer close(pr.done)
-		defer func() {
-			if pr.logFile != nil {
-				pr.logFile.Close()
+	var wg sync.WaitGroup
+	for i := 0; i < connsPerProject; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			if idx > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Duration(idx) * connStagger):
+				}
 			}
-		}()
+			m.supervise(ctx, pr, p, idx, logLine)
+		}(i)
+	}
+	wg.Wait()
 
-		err := client.Run(ctx, cfg,
-			func() { pr.restarts = 0; m.setStatus(p.ID, "running", "") },
-			logLine,
-		)
-
-		m.mu.Lock()
-		wanted := pr.desired
+	// Faqat o'zimizni olib tashlaymiz: Stop() kutishdan charchab qaytgan va
+	// undan keyin Start() yangi pool yaratgan bo'lsa, uni o'chirib
+	// yubormaslik kerak.
+	m.mu.Lock()
+	if cur, ok := m.procs[p.ID]; ok && cur == pr {
 		delete(m.procs, p.ID)
 		m.mu.Unlock()
+		m.setStatus(p.ID, "stopped", "")
+		return
+	}
+	m.mu.Unlock()
+}
 
-		if !wanted {
-			m.setStatus(p.ID, "stopped", "")
-			return
+// supervise — pool'dagi BITTA ulanishni loyiha to'xtatilgunga qadar tirik
+// ushlab turadi: client.Run qaytishi bilan (uzilish sababidan qat'i nazar)
+// kutib, qaytadan ulanadi. Chidamli bo'lishi SHART — relay bilan ulanish
+// tarmoqdagi qisqa uzilishlarda ham, uzoq (soatlab) uzilishlarda ham
+// o'z-o'zidan tiklanishi kerak, aks holda foydalanuvchi qo'lda Restart
+// bosmaguncha sayt ochilmaydi.
+func (m *Manager) supervise(ctx context.Context, pr *proc, p store.Project, idx int, logLine func(int, string)) {
+	backoff := initialBackoff
+	fails := 0
+	attempt := 0
+
+	for ctx.Err() == nil {
+		// Har urinishda eng yangi sozlamalarni olamiz: foydalanuvchi kutish
+		// paytida portni yoki relay ma'lumotlarini o'zgartirgan bo'lishi mumkin.
+		if fresh, err := m.st.GetProject(p.ID); err == nil {
+			p = fresh
 		}
-		if pr.restarts < maxRestarts {
-			wait := time.Duration(1<<pr.restarts) * time.Second
-			applog.Warn("[%s] ulanish uzildi, %s dan so'ng qayta urinish (%d/%d)",
-				short(p.ID), wait, pr.restarts+1, maxRestarts)
-			logLine(fmt.Sprintf("[ServerGo] ulanish uzildi, %s dan so'ng qayta urinish (%d/%d)", wait, pr.restarts+1, maxRestarts))
-			time.Sleep(wait)
-			if fresh, gerr := m.st.GetProject(p.ID); gerr == nil {
-				m.mu.Lock()
-				relay := m.relay
-				m.mu.Unlock()
-				_ = m.spawn(fresh, relay, pr.restarts+1)
-				return
+		m.mu.Lock()
+		relay := m.relay
+		m.mu.Unlock()
+
+		attempt++
+		var err error
+		connected := false
+		if !relay.ready() {
+			err = fmt.Errorf("relay sozlanmagan")
+		} else {
+			// onUp shu goroutine ichidan sinxron chaqiriladi (client.Run
+			// bloklovchi), shuning uchun connected'ga yozish xavfsiz.
+			cfg := client.Config{
+				RelayAddr:   relay.Addr,
+				Fingerprint: relay.Fingerprint,
+				Token:       relay.Token,
+				ProjectID:   p.ID,
+				Hostname:    p.Hostname(),
+				LocalPort:   p.Port,
+				ConnIndex:   idx,
+			}
+			err = client.Run(ctx, cfg,
+				func() {
+					connected = true
+					fails = 0
+					backoff = initialBackoff
+					pr.mu.Lock()
+					pr.up[idx] = true
+					pr.failing[idx] = false
+					pr.mu.Unlock()
+					m.syncStatus(p.ID, pr, "")
+				},
+				func(line string) { logLine(idx, line) },
+			)
+		}
+
+		if ctx.Err() != nil {
+			break
+		}
+		if !connected {
+			fails++
+		}
+
+		reason := "ulanish uzildi"
+		if err != nil {
+			reason += ": " + err.Error()
+		}
+		wait := jitter(backoff)
+		applog.Warn("[%s#%d] %s — %s dan so'ng qayta ulanadi (urinish #%d)", short(p.ID), idx+1, reason, wait, attempt+1)
+		logLine(idx, fmt.Sprintf("[ServerGo] %s — %s dan so'ng qayta ulanadi (urinish #%d)", reason, wait, attempt+1))
+
+		// Bu ulanish yiqildi. Loyihaning umumiy statusi faqat POOL'dagi
+		// hamma ulanish yiqilgan bo'lsa "error"ga o'tadi — bittasi tirik
+		// bo'lsa sayt ishlayveradi va foydalanuvchini bezovta qilish shart emas.
+		pr.mu.Lock()
+		pr.up[idx] = false
+		pr.failing[idx] = fails >= errorAfterFails
+		pr.mu.Unlock()
+		m.syncStatus(p.ID, pr, reason)
+
+		select {
+		case <-ctx.Done():
+		case <-time.After(wait):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
 			}
 		}
-		msg := "ulanish uzildi"
-		if err != nil {
-			msg += ": " + err.Error()
-		}
-		m.setStatus(p.ID, "error", msg)
-	}()
+	}
 
-	return nil
+	pr.mu.Lock()
+	pr.up[idx] = false
+	pr.mu.Unlock()
+}
+
+// jitter — kutish vaqtiga tasodifiy ±25% qo'shadi. Pool'dagi ulanishlar bir
+// sababdan (masalan relay qayta ishga tushdi) birga uzilgan bo'lsa, ular
+// birga qayta ulanmasligi kerak — aks holda ikkalasi bir vaqtda "yo'q"
+// bo'lgan oynalar saqlanib qolaverardi.
+func jitter(d time.Duration) time.Duration {
+	delta := int64(d) / 4
+	if delta <= 0 {
+		return d
+	}
+	return d + time.Duration(rand.Int63n(2*delta)-delta)
 }
 
 // Stop — ulanishni yopadi.
