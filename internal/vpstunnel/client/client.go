@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -125,6 +126,12 @@ func Run(ctx context.Context, cfg Config, onUp func(), onLog func(string)) error
 }
 
 // forward — bitta oqimni 127.0.0.1:port ga ikki yo'nalishli ko'chiradi.
+//
+// Har bir yo'nalish tugaganda faqat o'sha yo'nalish yopiladi (yarim yopish),
+// so'ng ikkalasi ham tugagunicha kutiladi. Ilgari birinchi ko'chirish
+// tugashi bilanoq ikkala ulanish ham yopilar edi — bu WebSocket kabi uzoq
+// yashaydigan (upgrade qilingan) ulanishlarda hali ma'lumot yuborayotgan
+// ikkinchi yo'nalishni o'rtasidan kesib tashlashi mumkin edi.
 func forward(stream net.Conn, port int, onLog func(string)) {
 	defer stream.Close()
 	local, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
@@ -136,8 +143,31 @@ func forward(stream net.Conn, port int, onLog func(string)) {
 	}
 	defer local.Close()
 
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(local, stream); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(stream, local); done <- struct{}{} }()
-	<-done
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(local, stream)
+		closeWrite(local) // lokal servis EOF ko'rsin
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(stream, local)
+		closeWrite(stream) // relay tomon EOF ko'rsin
+	}()
+	wg.Wait()
+}
+
+// closeWrite — ulanishning faqat yozish tomonini yopadi, o'qish tomoni ochiq
+// qoladi. *net.TCPConn buni CloseWrite() bilan beradi (TCP FIN). yamux
+// oqimida esa alohida CloseWrite() yo'q, lekin Close()ning o'zi aynan yarim
+// yopish: oqim streamLocalClose holatiga o'tib FIN yuboradi va undan keyin
+// ham o'qish mumkin — shu sabab quyidagi zaxira yo'l unga to'g'ri keladi.
+func closeWrite(c net.Conn) {
+	type closeWriter interface{ CloseWrite() error }
+	if cw, ok := c.(closeWriter); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	_ = c.Close()
 }

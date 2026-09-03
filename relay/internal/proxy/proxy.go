@@ -52,10 +52,23 @@ func (t *sessionTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		_ = stream.Close()
 		return nil, fmt.Errorf("so'rov yozilmadi: %w", err)
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(stream), req)
+	br := bufio.NewReader(stream)
+	resp, err := http.ReadResponse(br, req)
 	if err != nil {
 		_ = stream.Close()
 		return nil, fmt.Errorf("javob o'qilmadi: %w", err)
+	}
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		// 101 — protokol almashinuvi (WebSocket, h2c va h.k.). Bu holatda
+		// http.ReadResponse Body sifatida http.NoBody qaytaradi (1xx uchun
+		// "tana" yo'q deb hisoblanadi), sarlavhadan keyingi baytlar esa
+		// bufio buferida qolib ketadi — shuning uchun Body'ni o'zimiz
+		// quramiz. ReverseProxy.handleUpgradeResponse Body'ni
+		// io.ReadWriteCloser'ga cast qiladi va undan keyin ikki yo'nalishda
+		// xom baytlarni ko'chiradi; cast bajarilmasa so'rov "101 switching
+		// protocols response with non-writable body" bilan 502'ga aylanadi.
+		resp.Body = &upgradedBody{br: br, stream: stream}
+		return resp, nil
 	}
 	// http.ReadResponse'ning Body'si bufio ustida — Close() qilinganda
 	// bufio manbasi (bizning yamux stream) o'zi yopilmaydi, shuning uchun
@@ -75,6 +88,20 @@ func (b *streamBody) Close() error {
 	_ = b.stream.Close()
 	return err
 }
+
+// upgradedBody — 101 javobdan keyingi ulanish uchun Body: o'qish sarlavhadan
+// keyin buferda qolgan baytlarni yo'qotmaslik uchun bufio orqali, yozish esa
+// to'g'ridan-to'g'ri yamux oqimiga (u to'liq net.Conn) ketadi. Shu bilan
+// tunnel upgrade'dan so'ng oddiy ikki yo'nalishli bayt kanaliga aylanadi.
+// (Standart kutubxonadagi analogi: net/http.readWriteCloserBody.)
+type upgradedBody struct {
+	br     *bufio.Reader
+	stream net.Conn
+}
+
+func (b *upgradedBody) Read(p []byte) (int, error)  { return b.br.Read(p) }
+func (b *upgradedBody) Write(p []byte) (int, error) { return b.stream.Write(p) }
+func (b *upgradedBody) Close() error                { return b.stream.Close() }
 
 func NewProxyHandler(reg *registry.Registry) http.Handler {
 	rp := &httputil.ReverseProxy{
