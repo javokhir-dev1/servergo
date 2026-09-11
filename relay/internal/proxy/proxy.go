@@ -52,10 +52,20 @@ func (t *sessionTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		_ = stream.Close()
 		return nil, fmt.Errorf("so'rov yozilmadi: %w", err)
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(stream), req)
+	br := bufio.NewReader(stream)
+	resp, err := http.ReadResponse(br, req)
 	if err != nil {
 		_ = stream.Close()
 		return nil, fmt.Errorf("javob o'qilmadi: %w", err)
+	}
+	// 101 Switching Protocols (WebSocket, va boshqa upgrade'lar): bundan
+	// keyin oqim HTTP emas — ikki tomonlama xom kanal. ReverseProxy shuni
+	// ko'rganda Body'ni io.ReadWriteCloser ga aylantirishga urinadi va
+	// mijoz bilan baytlarni ikki tomonga ko'chiradi; oddiy io.ReadCloser
+	// bo'lsa "non-writable body" xatosi bilan 502 qaytaradi.
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		resp.Body = &upgradeBody{r: br, stream: stream}
+		return resp, nil
 	}
 	// http.ReadResponse'ning Body'si bufio ustida — Close() qilinganda
 	// bufio manbasi (bizning yamux stream) o'zi yopilmaydi, shuning uchun
@@ -75,6 +85,21 @@ func (b *streamBody) Close() error {
 	_ = b.stream.Close()
 	return err
 }
+
+// upgradeBody — upgrade'dan keyingi xom kanal.
+//
+// O'qish ataylab bufio ustidan ketadi, to'g'ridan-to'g'ri stream'dan emas:
+// http.ReadResponse sarlavhalarni o'qiyotganda bufer bir necha kilobayt
+// oldinga o'qib qo'ygan bo'lishi mumkin va serverning birinchi WebSocket
+// freymi o'sha buferda qolib ketadi. Stream'dan o'qisak, u bayt yo'qoladi.
+type upgradeBody struct {
+	r      *bufio.Reader
+	stream io.ReadWriteCloser
+}
+
+func (b *upgradeBody) Read(p []byte) (int, error)  { return b.r.Read(p) }
+func (b *upgradeBody) Write(p []byte) (int, error) { return b.stream.Write(p) }
+func (b *upgradeBody) Close() error                { return b.stream.Close() }
 
 func NewProxyHandler(reg *registry.Registry) http.Handler {
 	rp := &httputil.ReverseProxy{
