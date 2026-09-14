@@ -25,6 +25,15 @@ import (
 // maxHandshakeBytes — handshake JSON uchun oqilona chegara (DoS'dan himoya).
 const maxHandshakeBytes = 4096
 
+// handshakeTimeout — TLS o'rnatilgandan keyin handshake xabarini kutish
+// muddati.
+//
+// Busiz: port 9443 jamoatchilikka ochiq, va TLS'ni tugatib keyin 4 baytlik
+// uzunlikni YUBORMAYDIGAN ulanish `io.ReadFull` da abadiy osilib qolardi —
+// har biri goroutine va fayl deskriptorini band qilgan holda. Tokenni
+// bilish ham shart emas, chunki token tekshiruvi bundan KEYIN keladi.
+const handshakeTimeout = 15 * time.Second
+
 // Handshake — agent ulanish ochgach yuboradigan birinchi xabar.
 // Lokal tomondagi nusxasi: internal/vpstunnel/client/wire.go — ikkalasi ham
 // bir xil formatda bo'lishi SHART (4-bayt uzunlik + JSON, io.ReadFull bilan
@@ -130,6 +139,11 @@ func Serve(ln net.Listener, tlsCfg *tls.Config, token string, reg *registry.Regi
 }
 
 func handleConn(conn net.Conn, token string, reg *registry.Registry) {
+	// Handshake bosqichiga muddat qo'yamiz. Keyin uni SHART qilib
+	// tozalaymiz: yamux o'z oqimlarida deadline'ni o'zi boshqaradi va
+	// bu yerda qolgan muddat butun sessiyani 15 soniyada o'ldirardi.
+	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
+
 	hs, err := readHandshake(conn)
 	if err != nil {
 		log.Printf("control: handshake xato (%s): %v", conn.RemoteAddr(), err)
@@ -147,6 +161,12 @@ func handleConn(conn net.Conn, token string, reg *registry.Registry) {
 	if !hostnameRe.MatchString(hostname) {
 		log.Printf("control: noto'g'ri hostname (%s): %q", conn.RemoteAddr(), hostname)
 		_ = writeResult(conn, fmt.Errorf("hostname noto'g'ri: %q", hostname))
+		_ = conn.Close()
+		return
+	}
+
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		log.Printf("control: deadline tozalanmadi (%s): %v", conn.RemoteAddr(), err)
 		_ = conn.Close()
 		return
 	}

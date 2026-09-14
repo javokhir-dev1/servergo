@@ -21,7 +21,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
+
+	"golang.org/x/net/netutil"
 
 	"servergo-relay/internal/control"
 	"servergo-relay/internal/proxy"
@@ -35,6 +38,45 @@ func envOr(key, def string) string {
 	}
 	return def
 }
+
+// envInt — musbat butun son bo'lsa o'sha, aks holda standart qiymat.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+		log.Printf("%s qiymati noto'g'ri (%q) — standart ishlatiladi: %d", key, v, def)
+	}
+	return def
+}
+
+// Jamoatchilik serverlari uchun vaqt chegaralari.
+//
+// readHeaderTimeout — Slowloris'ga qarshi ASOSIY himoya: sarlavhani
+// tomchilab yuboradigan ulanish shu vaqtdan keyin uziladi. Go'da standart
+// qiymat — cheksiz, ya'ni bittagina mashina minglab ulanish ochib relay'ni
+// yiqita olardi.
+//
+// ReadTimeout va WriteTimeout ATAYLAB qo'yilmagan:
+//   - WriteTimeout WebSocket va boshqa 101 (protokol almashinuvi)
+//     ulanishlarini o'rtasidan uzadi — relay ularni qo'llab-quvvatlaydi.
+//   - ReadTimeout katta fayl yuklashni (uzoq davom etadigan tana) uzadi.
+//
+// Ikkalasining o'rniga sekin TANA hujumi (R-U-Dead-Yet) VPS tomonidagi
+// nftables qoidalari bilan cheklanadi: bir IP'dan bir vaqtda 64 ta ulanish.
+const (
+	readHeaderTimeout = 10 * time.Second
+	idleTimeout       = 120 * time.Second
+	maxHeaderBytes    = 64 << 10 // 64 KB (Go standarti 1 MB)
+)
+
+// Bir vaqtda ochiq bo'lishi mumkin bo'lgan ulanishlar soni. Chegaradan
+// oshgan ulanish listener darajasida kutib turadi — Go goroutine yaratmaydi,
+// ya'ni xotira o'smaydi. LimitNOFILE=65535 va MemoryMax=448M bilan mos.
+const (
+	defaultMaxPublicConns  = 4096
+	defaultMaxControlConns = 256
+)
 
 func main() {
 	token := os.Getenv("RELAY_TOKEN")
@@ -70,6 +112,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("control portini tinglab bo'lmadi (%s): %v", controlAddr, err)
 	}
+	maxControlConns := envInt("RELAY_MAX_CONTROL_CONNS", defaultMaxControlConns)
+	controlLn = netutil.LimitListener(controlLn, maxControlConns)
+	log.Printf("control ulanish chegarasi: %d", maxControlConns)
 	controlTLSCfg := &tls.Config{Certificates: []tls.Certificate{controlCert}}
 	go func() {
 		log.Printf("control tinglanmoqda: %s", controlAddr)
@@ -96,14 +141,19 @@ func main() {
 			log.Fatalf("dev TLS sertifikati yaratilmadi: %v", err)
 		}
 		srv := &http.Server{
-			Addr:      httpsAddr,
-			Handler:   handler,
-			TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
+			Addr:              httpsAddr,
+			Handler:           handler,
+			TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}},
+			ReadHeaderTimeout: readHeaderTimeout,
+			IdleTimeout:       idleTimeout,
+			MaxHeaderBytes:    maxHeaderBytes,
 		}
 		log.Printf("[DEV] https tinglanmoqda: %s (o'z-o'zidan imzolangan sertifikat)", httpsAddr)
 		log.Fatal(srv.ListenAndServeTLS("", ""))
 		return
 	}
+
+	maxPublicConns := envInt("RELAY_MAX_PUBLIC_CONNS", defaultMaxPublicConns)
 
 	acm := proxy.NewAutocertManager(certDir, reg)
 
@@ -115,19 +165,37 @@ func main() {
 				target := "https://" + r.Host + r.URL.RequestURI()
 				http.Redirect(w, r, target, http.StatusMovedPermanently)
 			})),
+			ReadHeaderTimeout: readHeaderTimeout,
+			ReadTimeout:       30 * time.Second, // :80 da faqat ACME va redirect — uzun tana kutilmaydi
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       idleTimeout,
+			MaxHeaderBytes:    maxHeaderBytes,
 		}
-		if err := redirectSrv.ListenAndServe(); err != nil {
+		httpLn, err := net.Listen("tcp", httpAddr)
+		if err != nil {
+			log.Printf("http portini tinglab bo'lmadi (%s): %v", httpAddr, err)
+			return
+		}
+		if err := redirectSrv.Serve(netutil.LimitListener(httpLn, maxPublicConns)); err != nil {
 			log.Printf("http server to'xtadi: %v", err)
 		}
 	}()
 
 	httpsSrv := &http.Server{
-		Addr:      httpsAddr,
-		Handler:   handler,
-		TLSConfig: proxy.TLSConfigFor(acm),
+		Addr:              httpsAddr,
+		Handler:           handler,
+		TLSConfig:         proxy.TLSConfigFor(acm),
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
-	log.Printf("https tinglanmoqda: %s", httpsAddr)
-	log.Fatal(httpsSrv.ListenAndServeTLS("", ""))
+	httpsLn, err := net.Listen("tcp", httpsAddr)
+	if err != nil {
+		log.Fatalf("https portini tinglab bo'lmadi (%s): %v", httpsAddr, err)
+	}
+	log.Printf("https tinglanmoqda: %s (ulanish chegarasi %d, sarlavha kutish %s)",
+		httpsAddr, maxPublicConns, readHeaderTimeout)
+	log.Fatal(httpsSrv.ServeTLS(netutil.LimitListener(httpsLn, maxPublicConns), "", ""))
 }
 
 // loadOrCreateControlCert — control kanali uchun uzoq muddatli (10 yil)

@@ -8,3 +8,6 @@ cloudflared-linux-amd64.deb
 .env
 .env.*
 !.env.example
+
+# Yigilgan relay binari (deploy artefakti)
+relay/dist/
