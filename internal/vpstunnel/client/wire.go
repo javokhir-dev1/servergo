@@ -17,6 +17,11 @@ type handshake struct {
 	Token     string `json:"token"`
 	ProjectID string `json:"project_id"`
 	Hostname  string `json:"hostname"`
+
+	// ConnIndex — shu loyihaning nechanchi ulanishi (0 dan boshlab). Relay
+	// buni faqat logga yozadi; eski relay uni umuman bilmaydi va JSON
+	// bo'lgani uchun beparvo o'tkazib yuboradi.
+	ConnIndex int `json:"conn_index"`
 }
 
 // sendHandshake — handshake'ni yozadi va relay javobini o'qiydi

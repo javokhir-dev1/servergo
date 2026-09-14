@@ -26,6 +26,7 @@ import (
 	"servergo-relay/internal/control"
 	"servergo-relay/internal/proxy"
 	"servergo-relay/internal/registry"
+	"servergo-relay/internal/status"
 )
 
 func envOr(key, def string) string {
@@ -50,7 +51,13 @@ func main() {
 		log.Fatalf("sertifikat papkasi yaratilmadi: %v", err)
 	}
 
+	// Diagnostika: faqat loopback'da, ya'ni faqat VPS'ga SSH bilan kirgan
+	// odam ko'ra oladi. Bo'sh qiymat berilsa umuman ko'tarilmaydi.
+	statusAddr := envOr("RELAY_STATUS_ADDR", "127.0.0.1:9090")
+	boshlandi := time.Now()
+
 	reg := registry.New()
+	hisoblagich := &proxy.Hisoblagichlar{}
 
 	// --- Control: agentlar shu yerga uladi ---
 	controlCert, fingerprint, err := loadOrCreateControlCert(certDir)
@@ -71,8 +78,17 @@ func main() {
 		}
 	}()
 
+	if statusAddr != "" {
+		if _, err := status.Serve(statusAddr, reg, hisoblagich, boshlandi); err != nil {
+			// Diagnostika ishlamasa ham relay o'z ishini davom ettiradi.
+			log.Printf("holat serveri ko'tarilmadi (%s): %v", statusAddr, err)
+		} else {
+			log.Printf("holat serveri tinglanmoqda: %s (faqat loopback — 'ssh vps curl -s %s/holat')", statusAddr, statusAddr)
+		}
+	}
+
 	// --- Jamoatchilik: :80 (ACME + redirect) va :443 (proxy) ---
-	handler := proxy.NewProxyHandler(reg)
+	handler := proxy.NewProxyHandler(reg, hisoblagich)
 
 	if devTLS {
 		cert, err := selfSignedForAnyHost()

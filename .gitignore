@@ -3,3 +3,8 @@ tmphead/
 servergo
 servergo.bak
 cloudflared-linux-amd64.deb
+
+# Maxfiy qiymatlar: relay tokeni, fingerprint va h.k.
+.env
+.env.*
+!.env.example

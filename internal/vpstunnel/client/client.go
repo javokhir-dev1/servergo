@@ -17,13 +17,17 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/yamux"
 )
 
-// Config — bitta loyiha uchun ulanish parametrlari.
+// Config — bitta ULANISH uchun parametrlar. Bir loyiha uchun bir nechta
+// ulanish ochiladi (qarang: manager.connsPerProject), ular faqat ConnIndex
+// bilan farq qiladi.
 type Config struct {
 	RelayAddr   string // "host:port" — control manzil
 	Fingerprint string // relay control sertifikatining SHA256 (hex)
@@ -31,6 +35,7 @@ type Config struct {
 	ProjectID   string
 	Hostname    string
 	LocalPort   int
+	ConnIndex   int // shu loyihaning nechanchi ulanishi (0 dan boshlab)
 }
 
 const dialTimeout = 10 * time.Second
@@ -40,16 +45,48 @@ const dialTimeout = 10 * time.Second
 // TCP ulanishlar ko'p marshrutizatorlarda ~1-2 daqiqada tozalanadi).
 const tcpKeepAlive = 15 * time.Second
 
-// yamuxConfig — standart sozlamalarga nisbatan tarmoqdagi qisqa
-// (bir necha soniyalik) uzilishlarga chidamliroq: interval qisqaroq (tezroq
-// ping — NAT yozuvini yangilab turadi), lekin pong kutish vaqti uzunroq
-// (bitta muvaqqat paket yo'qolishi sababli sessiya bekorga o'lib qolmasin).
-// Relay tomonidagi nusxasi bilan bir xil bo'lishi kerak: relay/internal/control/control.go.
-func yamuxConfig() *yamux.Config {
+// keepAliveInterval — yamux ping davri. Qisqa bo'lgani NAT/firewall
+// jadvalidagi yozuvni yangilab turadi.
+const keepAliveInterval = 15 * time.Second
+
+// stallTolerance — ping javobi (pong) kutiladigan eng uzoq vaqt, ya'ni
+// sessiyani o'ldirmasdan chidab beriladigan "qotish" uzunligi.
+//
+// Nima uchun bunchalik uzun: o'lchovlar shuni ko'rsatdiki, agent va relay
+// orasidagi yo'lda TCP oqimi vaqti-vaqti bilan o'nlab soniyaga muzlab qoladi
+// (bir vaqtning o'zida o'sha hostga ochilgan BARCHA ulanishlarda — port va
+// protokoldan qat'i nazar), so'ng o'z-o'zidan tiklanadi va ulanish yaroqli
+// bo'lib qolaveradi. yamux'ning standart 10s / oldingi 30s chegarasi bunday
+// qotishni "ulanish o'ldi" deb baholab, sessiyani buzar edi: natijada tunnel
+// har 2 daqiqada uzilib, sayt bir necha soniya 502 qaytarardi. Endi qotish
+// shunchaki kechikishga aylanadi — oqim tiklanganda sessiya davom etadi.
+//
+// Bu qiymat ConnectionWriteTimeout sifatida ishlatiladi: u ham pong kutish
+// muddati, ham oqimga yozish muddati. Haqiqatan o'lgan ulanish shu vaqtdan
+// keyin aniqlanadi va manager darhol qayta ulanadi.
+const stallTolerance = 120 * time.Second
+
+// yamuxConfig — sozlamalar relay tomonidagi nusxasi bilan BIR XIL bo'lishi
+// kerak: relay/internal/control/control.go.
+func yamuxConfig(onLog func(string)) *yamux.Config {
 	cfg := yamux.DefaultConfig()
-	cfg.KeepAliveInterval = 15 * time.Second
-	cfg.ConnectionWriteTimeout = 30 * time.Second
+	cfg.KeepAliveInterval = keepAliveInterval
+	cfg.ConnectionWriteTimeout = stallTolerance
+	// yamux'ning ichki diagnostikasi loyiha logiga tushsin — uzilish sababini
+	// (keepalive timeout, oqim xatosi, protokol xatosi) shusiz bilib bo'lmaydi.
+	if onLog != nil {
+		cfg.Logger = log.New(logWriter(onLog), "[yamux] ", 0)
+		cfg.LogOutput = nil
+	}
 	return cfg
+}
+
+// logWriter — log.Logger chiqishini onLog chaqiruviga aylantiradi.
+type logWriter func(string)
+
+func (w logWriter) Write(p []byte) (int, error) {
+	w(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
 }
 
 // Run — bitta ulanish davri: bloklaydi, sessiya uzilguncha yoki ctx bekor
@@ -86,12 +123,13 @@ func Run(ctx context.Context, cfg Config, onUp func(), onLog func(string)) error
 		Token:     cfg.Token,
 		ProjectID: cfg.ProjectID,
 		Hostname:  cfg.Hostname,
+		ConnIndex: cfg.ConnIndex,
 	}); err != nil {
 		_ = tlsConn.Close()
 		return err
 	}
 
-	sess, err := yamux.Client(tlsConn, yamuxConfig())
+	sess, err := yamux.Client(tlsConn, yamuxConfig(onLog))
 	if err != nil {
 		_ = tlsConn.Close()
 		return fmt.Errorf("yamux sessiya ochilmadi: %w", err)

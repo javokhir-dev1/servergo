@@ -124,13 +124,43 @@ foydalanuvchilar uchun bu qo'shimcha kechikish beradi. O'zbekiston ichidagi
 o'tadi, xalqaro yo'lga chiqmaydi.
 
 **Qanday ishlaydi**: ServerGo (lokal) VPS'dagi relay'ga chiquvchi TLS ulanish
-ochadi (bitta loyiha — bitta ulanish, portlarni ochish shart emas). Relay
-`:443`'da jamoatchilik so'rovlarini qabul qiladi, Host header bo'yicha mos
-ulanishga (yamux oqimi) yo'naltiradi; lokal tomon esa faqat xom baytlarni
-`localhost:PORT`ga ko'chiradi — HTTP semantikasi relay tomonida to'g'ri
-bajariladi. Sertifikatlar (jamoatchilik uchun) Let's Encrypt orqali avtomatik
-olinadi; control ulanish esa relay ishga tushganda generatsiya qilingan
-sertifikatning SHA256 barmoq izi (fingerprint) bilan tasdiqlanadi.
+ochadi (portlarni ochish shart emas). Relay `:443`'da jamoatchilik so'rovlarini
+qabul qiladi, Host header bo'yicha mos ulanishga (yamux oqimi) yo'naltiradi;
+lokal tomon esa faqat xom baytlarni `localhost:PORT`ga ko'chiradi — HTTP
+semantikasi relay tomonida to'g'ri bajariladi. Sertifikatlar (jamoatchilik
+uchun) Let's Encrypt orqali avtomatik olinadi; control ulanish esa relay ishga
+tushganda generatsiya qilingan sertifikatning SHA256 barmoq izi (fingerprint)
+bilan tasdiqlanadi.
+
+**Ulanishlar pool'i.** Har bir loyiha uchun bitta emas, **ikkita mustaqil
+ulanish** ochiladi (cloudflared ham shu tamoyilda ishlaydi: 4 ta ulanish,
+kamida 2 xil datacentrga). Bittasi uzilsa yoki sekinlashsa, relay so'rovni
+qolganida qayta bajaradi va tashrifchi uzilishni umuman sezmaydi. Qayta
+urinish faqat xavfsiz so'rovlar uchun: tanasi yo'q va idempotent metod
+(GET/HEAD/OPTIONS/TRACE) — aks holda POST ikki marta bajarilib ketardi.
+
+O'lchov (20 000 so'rov, 100 parallel, yuk oqayotganda bitta ulanish yadro
+darajasida majburan buzilgan):
+
+| | Natija |
+|---|---|
+| 2 ulanish (pool) | 20 000 → 200, **0 xato** |
+| 1 ulanish | 19 974 → 200, **26 ta 502** |
+
+Pool sessiya darajasidagi nosozlikni yopadi, **host darajasidagini emas**:
+VPS o'zi yiqilsa yoki tarmog'i uzilsa, barcha ulanishlar birga o'ladi. Chinakam
+zaxira uchun ikkinchi relay kerak.
+
+**Diagnostika.** Relay `127.0.0.1:9090` da holat serverini ko'taradi — faqat
+loopback, ya'ni unga yetish uchun VPS'ga SSH bilan kirish kerak:
+
+```bash
+ssh vps curl -s localhost:9090/holat        # pool hajmi, hisoblagichlar, xotira
+ssh vps curl -s 'localhost:9090/debug/pprof/goroutine?debug=2'   # qotish sababi
+```
+
+`RELAY_STATUS_ADDR` bilan manzilni o'zgartirish yoki bo'sh qiymat berib
+o'chirish mumkin.
 
 **VPS'da o'rnatish** (bir marta):
 
