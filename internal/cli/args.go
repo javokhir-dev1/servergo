@@ -28,3 +28,19 @@ func takeValueFlag(args []string, name string) (value string, found bool, rest [
 	}
 	return value, found, rest
 }
+
+// takeValueFlags — bir necha marta takrorlanishi mumkin bo'lgan bayroq
+// (masalan `-r /yo'l1 -r /yo'l2`) qiymatlarini yig'adi.
+func takeValueFlags(args []string, name string) (values []string, rest []string) {
+	rest = make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == name && i+1 < len(args) {
+			values = append(values, args[i+1])
+			i++
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return values, rest
+}

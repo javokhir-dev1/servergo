@@ -80,6 +80,7 @@ const api = {
   appsDelete: (id) => apiPost('/api/apps/delete', { id }),
   appsLogs: (id) => apiGet(`/api/apps/logs?id=${encodeURIComponent(id)}`),
   appsEvents: (since) => apiGet(`/api/apps/events?since=${Number(since) || 0}`),
+  appsSandboxStatus: () => apiGet('/api/apps/sandbox'),
 
   // Bulut bo'limi
   authStatus: () => apiGet('/api/auth/status'),
@@ -138,6 +139,8 @@ const state = {
   appLogs: [],
   appSeq: 0,
   appEditingId: null, // null — yangi ilova, aks holda tahrir
+  // undefined — hali so'ralmagan; {available, reason} — serverdan kelgan javob
+  sandbox: undefined,
   // Bulut bo'limi
   cloudStatus: null,
   cloudError: null,
@@ -2153,6 +2156,7 @@ const APP_STATUS = {
 };
 
 async function refreshApps() {
+  if (state.sandbox === undefined) await loadSandboxStatus();
   const res = await api.appsList();
   state.appList = res.ok ? res.data || [] : [];
   if (!res.ok) toast(res.error, 'error');
@@ -2188,6 +2192,9 @@ function renderApps() {
         <td class="dim mono">${esc(a.command)}</td>
         <td><span class="status ${esc(a.status)}">${esc(APP_STATUS[a.status] || a.status)}</span></td>
         <td><span class="pill ${a.autostart ? 'on' : ''}">${a.autostart ? 'yoqilgan' : "o'chirilgan"}</span></td>
+        <td><span class="pill ${a.sandbox ? 'on' : 'warn'}" title="${a.sandbox
+          ? "Ilova faqat o'z papkasini ko'radi"
+          : "Ilova butun uy papkasini ko'radi — buzilsa SSH kalitlari va boshqa loyihalarning sirlariga yetadi"}">${a.sandbox ? 'yoqilgan' : "YO'Q"}</span></td>
         <td class="actions">
           ${isRunning
             ? `<button class="act" data-aact="restart" data-aid="${esc(a.id)}" title="Qayta ishga tushirish">↻ Restart</button>
@@ -2233,6 +2240,12 @@ function renderAppDetail() {
       <dt>Buyruq</dt><dd class="mono">${esc(a.command)}</dd>
       <dt>Ishchi papka</dt><dd class="mono">${esc(a.cwd || '(uy papkasi)')}</dd>
       <dt>Avtostart</dt><dd>${a.autostart ? 'yoqilgan' : "o'chirilgan"}</dd>
+      <dt>Sandbox</dt><dd>${a.sandbox
+        ? `yoqilgan — faqat <span class="mono">${esc(a.cwd)}</span> ko'rinadi`
+        : "<span class=\"pill warn\">o'chirilgan</span> — ilova butun uy papkasini ko'radi"}</dd>
+      ${a.sandbox && (a.sandboxRw || []).length
+        ? `<dt>Qo'shimcha yo'llar</dt><dd class="mono">${esc((a.sandboxRw || []).join(', '))}</dd>`
+        : ''}
       ${a.lastError ? `<dt>Oxirgi xato</dt><dd>${esc(a.lastError)}</dd>` : ''}
       <dt>Yaratilgan</dt><dd>${formatDate(a.createdAt)}</dd>
     </dl>`;
@@ -2327,6 +2340,11 @@ function openAppForm(id) {
   $('af-command').value = a ? a.command : '';
   $('af-cwd').value = a ? a.cwd : '';
   $('af-autostart').checked = a ? a.autostart : false;
+  // Yangi ilova uchun sandbox standart holatda yoqilgan — himoyani
+  // ataylab o'chirish kerak bo'lsin, yoqishni esdan chiqarish emas.
+  $('af-sandbox').checked = a ? a.sandbox : true;
+  $('af-rw').value = a && a.sandboxRw ? a.sandboxRw.join('\n') : '';
+  syncAppSandboxFields();
 
   setAppFormNote('');
   $('app-form-modal').hidden = false;
@@ -2346,12 +2364,36 @@ function setAppFormNote(msg, kind = '') {
 }
 
 function appFormInput() {
+  const sandbox = $('af-sandbox').checked;
   return {
     name: $('af-name').value.trim(),
     command: $('af-command').value.trim(),
     cwd: $('af-cwd').value.trim(),
     autostart: $('af-autostart').checked,
+    sandbox,
+    sandboxRw: sandbox
+      ? $('af-rw').value.split('\n').map((l) => l.trim()).filter(Boolean)
+      : [],
   };
+}
+
+// syncAppSandboxFields — sandbox o'chirilgan bo'lsa qo'shimcha yo'llar
+// maydoni ma'nosiz; tizimda bwrap bo'lmasa belgini umuman bermaymiz.
+function syncAppSandboxFields() {
+  const on = $('af-sandbox').checked;
+  $('af-rw-field').hidden = !on;
+  const st = state.sandbox;
+  if (st && !st.available) {
+    $('af-sandbox').checked = false;
+    $('af-sandbox').disabled = true;
+    $('af-rw-field').hidden = true;
+    $('af-sandbox-hint').innerHTML = `Bu tizimda sandbox ishlamaydi: ${esc(st.reason || '')}`;
+  }
+}
+
+async function loadSandboxStatus() {
+  const res = await api.appsSandboxStatus();
+  state.sandbox = res.ok ? res.data : null;
 }
 
 async function saveAppForm() {
@@ -2392,6 +2434,7 @@ $('app-search').addEventListener('input', (e) => {
   renderApps();
 });
 
+$('af-sandbox').addEventListener('change', syncAppSandboxFields);
 $('app-new').addEventListener('click', () => openAppForm(null));
 $('app-detail-close').addEventListener('click', closeAppDetail);
 document.querySelectorAll('.tab[data-atab]').forEach((t) => {

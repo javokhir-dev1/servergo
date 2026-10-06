@@ -6,6 +6,7 @@ package manager
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"servergo/internal/apps/sandbox"
 	"servergo/internal/apps/store"
 )
 
@@ -24,6 +26,9 @@ const (
 	aliveGrace   = 1500 * time.Millisecond // shuncha vaqt tirik qolsa "running" deb hisoblanadi
 	maxRingLines = 500
 	maxLogFileMB = 10
+	// sandboxInfoFD — bwrap sandbox ma'lumotini (init PID, PID namespace)
+	// shu deskriptorga yozadi; cmd.ExtraFiles[0] bolada aynan fd 3 bo'ladi.
+	sandboxInfoFD = 3
 )
 
 // EmitFunc — UI'ga hodisa yuborish (tunnel.Service.emit bilan bir xil shakl).
@@ -58,6 +63,10 @@ type proc struct {
 	logs     *ring
 	logFile  *os.File
 	done     chan struct{}
+	// Sandbox'da ishlayotgan ilova uchun: ichkaridagi jarayonlarga signal
+	// yuborish uchun kerak (0 — sandbox'siz ishlamoqda).
+	nsInode uint64
+	initPID int
 }
 
 type Manager struct {
@@ -117,6 +126,32 @@ func (m *Manager) spawn(a store.App, restarts int) error {
 	}
 
 	cmd := exec.Command("sh", "-c", a.Command)
+	var infoR, infoW *os.File
+	if a.Sandbox {
+		// Ishchi papka ko'rsatilmasa cwd uy papkasiga tushadi — sandbox
+		// uy papkasini yopishga qurilgan, demak bunda ma'nosi qolmaydi.
+		if strings.TrimSpace(a.Cwd) == "" {
+			const msg = "sandbox uchun ishchi papka ko'rsatilishi shart"
+			m.setStatus(a.ID, "error", msg)
+			return errors.New(msg)
+		}
+		if err := sandbox.Available(); err != nil {
+			m.setStatus(a.ID, "error", "sandbox: "+err.Error())
+			return err
+		}
+		argv, err := sandbox.Argv(sandbox.Spec{Cwd: cwd, RW: a.SandboxRW}, a.Command, sandboxInfoFD)
+		if err != nil {
+			m.setStatus(a.ID, "error", "sandbox: "+err.Error())
+			return err
+		}
+		r, w, perr := os.Pipe()
+		if perr != nil {
+			return perr
+		}
+		infoR, infoW = r, w
+		cmd = exec.Command(argv[0], argv[1:]...)
+		cmd.ExtraFiles = []*os.File{infoW}
+	}
 	cmd.Dir = cwd
 	setupProcAttr(cmd)
 
@@ -146,8 +181,25 @@ func (m *Manager) spawn(a store.App, restarts int) error {
 		if lf != nil {
 			lf.Close()
 		}
+		closeFiles(infoR, infoW)
 		m.setStatus(a.ID, "error", "ishga tushmadi: "+err.Error())
 		return err
+	}
+
+	if infoW != nil {
+		// Yozuv uchi faqat bwrap'da qolishi kerak, aks holda o'qish EOF
+		// kutib qotib qolardi.
+		infoW.Close()
+		_ = infoR.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if in, err := sandbox.ParseInfo(infoR); err == nil {
+			pr.nsInode, pr.initPID = in.PidNS, in.ChildPID
+			appendLog(m, pr, a.ID, "[ServerGo] sandbox ichida ishga tushdi — uy papkasi yopiq, faqat "+cwd+" ko'rinadi")
+		} else {
+			// Ilova ishlayveradi, lekin to'xtatish "qattiq" bo'ladi
+			// (SIGTERM ichkariga yetmaydi) — shuni yozib qo'yamiz.
+			log.Printf("[apps][%s] sandbox ma'lumotini o'qib bo'lmadi: %v", short(a.ID), err)
+		}
+		infoR.Close()
 	}
 
 	m.mu.Lock()
@@ -237,7 +289,11 @@ func (m *Manager) Stop(id string) error {
 		return nil
 	}
 
-	_ = terminate(pr.cmd)
+	if pr.nsInode != 0 {
+		_ = terminateNS(pr.nsInode, pr.initPID)
+	} else {
+		_ = terminate(pr.cmd)
+	}
 	select {
 	case <-pr.done:
 	case <-time.After(stopTimeout):
@@ -309,4 +365,22 @@ func rotateIfBig(path string) {
 	if st.Size() > maxLogFileMB*1024*1024 {
 		_ = os.Rename(path, path+".old")
 	}
+}
+
+func closeFiles(files ...*os.File) {
+	for _, f := range files {
+		if f != nil {
+			f.Close()
+		}
+	}
+}
+
+// appendLog — ServerGo'ning o'z xabarini ilova logiga qo'shadi (jarayonning
+// stdout'i bilan bir joyda ko'rinsin).
+func appendLog(m *Manager, pr *proc, id, line string) {
+	pr.logs.add(line)
+	if pr.logFile != nil {
+		fmt.Fprintln(pr.logFile, line)
+	}
+	m.emit("app_log", map[string]string{"id": id, "line": line})
 }

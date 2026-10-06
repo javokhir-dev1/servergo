@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"servergo/internal/apps/manager"
+	"servergo/internal/apps/sandbox"
 	"servergo/internal/apps/store"
 )
 
@@ -155,6 +156,24 @@ type AppInput struct {
 	Command   string `json:"command"`
 	Cwd       string `json:"cwd"`
 	Autostart bool   `json:"autostart"`
+	// Sandbox — ilovani bubblewrap ichida ishga tushirish (uy papkasi
+	// yopiladi, faqat o'z papkasi ko'rinadi).
+	Sandbox bool `json:"sandbox"`
+	// SandboxRW — sandbox ichida qo'shimcha ko'rinadigan yo'llar.
+	SandboxRW []string `json:"sandboxRw"`
+}
+
+// SandboxStatus — UI/CLI uchun: bu tizimda sandbox ishlaydimi.
+type SandboxStatus struct {
+	Available bool   `json:"available"`
+	Reason    string `json:"reason"`
+}
+
+func (s *Service) SandboxStatus() SandboxStatus {
+	if err := sandbox.Available(); err != nil {
+		return SandboxStatus{Available: false, Reason: err.Error()}
+	}
+	return SandboxStatus{Available: true}
 }
 
 var nameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9 ._-]{0,63}$`)
@@ -168,6 +187,26 @@ func (s *Service) validate(in *AppInput, excludeID string) error {
 	}
 	if in.Command == "" {
 		return errors.New("buyruq bo'sh bo'lmasligi kerak")
+	}
+	clean := make([]string, 0, len(in.SandboxRW))
+	for _, p := range in.SandboxRW {
+		if p = strings.TrimSpace(p); p != "" {
+			clean = append(clean, p)
+		}
+	}
+	in.SandboxRW = clean
+	if in.Sandbox {
+		if in.Cwd == "" {
+			return errors.New("sandbox yoqilgan bo'lsa ishchi papka ko'rsatilishi shart — ilova aynan shu papkani ko'radi")
+		}
+		if err := sandbox.Available(); err != nil {
+			return errors.New("sandbox ishlamaydi: " + err.Error())
+		}
+		if err := sandbox.Validate(sandbox.Spec{Cwd: in.Cwd, RW: in.SandboxRW}); err != nil {
+			return err
+		}
+	} else if len(in.SandboxRW) > 0 {
+		return errors.New("qo'shimcha yo'llar faqat sandbox yoqilganda ma'noga ega")
 	}
 	taken, err := s.st.NameTaken(in.Name, excludeID)
 	if err != nil {
@@ -192,6 +231,8 @@ func (s *Service) CreateApp(in AppInput) (*AppView, error) {
 		Command:   in.Command,
 		Cwd:       in.Cwd,
 		Autostart: in.Autostart,
+		Sandbox:   in.Sandbox,
+		SandboxRW: in.SandboxRW,
 		Status:    "stopped",
 		CreatedAt: time.Now(),
 	}
@@ -218,6 +259,8 @@ func (s *Service) ImportApp(id string, in AppInput) (*AppView, error) {
 		Command:   in.Command,
 		Cwd:       in.Cwd,
 		Autostart: in.Autostart,
+		Sandbox:   in.Sandbox,
+		SandboxRW: in.SandboxRW,
 		Status:    "stopped",
 		CreatedAt: time.Now(),
 	}
@@ -243,6 +286,7 @@ func (s *Service) UpdateApp(id string, in AppInput) (*AppView, error) {
 		_ = s.mgr.Stop(id)
 	}
 	a.Name, a.Command, a.Cwd, a.Autostart = in.Name, in.Command, in.Cwd, in.Autostart
+	a.Sandbox, a.SandboxRW = in.Sandbox, in.SandboxRW
 	if err := s.st.SaveApp(a); err != nil {
 		return nil, err
 	}

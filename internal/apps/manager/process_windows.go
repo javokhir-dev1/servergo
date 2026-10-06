@@ -36,3 +36,6 @@ func forceKill(cmd *exec.Cmd) error {
 	kill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	return kill.Run()
 }
+
+// terminateNS — Windows'da sandbox yo'q (bubblewrap Linux texnologiyasi).
+func terminateNS(inode uint64, initPID int) error { return nil }

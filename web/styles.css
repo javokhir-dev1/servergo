@@ -802,6 +802,21 @@ td.app .app-path {
 }
 .form-note.error { background: rgba(255,95,109,.1); border-color: rgba(255,95,109,.4); color: #ff9aa2; }
 
+/* Sandbox tushuntirishi — belgi ostidagi mayda izoh */
+.form-hint {
+  margin: -4px 0 0 26px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.form-hint code {
+  font-family: var(--mono, monospace);
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(255,255,255,.06);
+}
+
 /* Loyiha jadvali */
 td.url a { color: var(--accent); text-decoration: none; }
 td.url a:hover { text-decoration: underline; }
@@ -821,6 +836,7 @@ td.url a:hover { text-decoration: underline; }
   color: var(--muted);
 }
 .pill.on { color: var(--green); border-color: rgba(46,204,143,.4); }
+.pill.warn { color: #ffd08a; border-color: rgba(255,180,58,.4); background: rgba(255,180,58,.1); }
 
 /* Diagnostika */
 .diag-summary {
