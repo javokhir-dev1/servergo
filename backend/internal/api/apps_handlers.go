@@ -3,8 +3,32 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// Sandbox yo'llari bazada bitta matn ustunida, qator ajratgich bilan
+// saqlanadi (yo'lda vergul bo'lishi mumkin), API'da esa ro'yxat sifatida
+// ko'rinadi.
+func splitPaths(v string) []string {
+	out := []string{}
+	for _, l := range strings.Split(v, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func joinPaths(list []string) string {
+	clean := make([]string, 0, len(list))
+	for _, l := range list {
+		if l = strings.TrimSpace(l); l != "" {
+			clean = append(clean, l)
+		}
+	}
+	return strings.Join(clean, "\n")
+}
 
 type appRow struct {
 	LocalID   string    `json:"local_id"`
@@ -12,6 +36,9 @@ type appRow struct {
 	Command   string    `json:"command"`
 	Cwd       string    `json:"cwd"`
 	Autostart bool      `json:"autostart"`
+	Sandbox   bool      `json:"sandbox"`
+	SandboxRO []string  `json:"sandbox_ro"`
+	SandboxRW []string  `json:"sandbox_rw"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -19,7 +46,8 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
 
 	rows, err := s.pool.Query(r.Context(),
-		`SELECT local_id, name, command, cwd, autostart, updated_at FROM apps WHERE user_id = $1 ORDER BY name`,
+		`SELECT local_id, name, command, cwd, autostart, sandbox, sandbox_ro, sandbox_rw, updated_at
+		   FROM apps WHERE user_id = $1 ORDER BY name`,
 		user.ID,
 	)
 	if err != nil {
@@ -31,20 +59,26 @@ func (s *Server) handleListApps(w http.ResponseWriter, r *http.Request) {
 	out := []appRow{}
 	for rows.Next() {
 		var a appRow
-		if err := rows.Scan(&a.LocalID, &a.Name, &a.Command, &a.Cwd, &a.Autostart, &a.UpdatedAt); err != nil {
+		var ro, rw string
+		if err := rows.Scan(&a.LocalID, &a.Name, &a.Command, &a.Cwd, &a.Autostart,
+			&a.Sandbox, &ro, &rw, &a.UpdatedAt); err != nil {
 			writeErr(w, http.StatusInternalServerError, "scan app failed")
 			return
 		}
+		a.SandboxRO, a.SandboxRW = splitPaths(ro), splitPaths(rw)
 		out = append(out, a)
 	}
 	writeOK(w, out)
 }
 
 type upsertAppRequest struct {
-	Name      string `json:"name"`
-	Command   string `json:"command"`
-	Cwd       string `json:"cwd"`
-	Autostart bool   `json:"autostart"`
+	Name      string   `json:"name"`
+	Command   string   `json:"command"`
+	Cwd       string   `json:"cwd"`
+	Autostart bool     `json:"autostart"`
+	Sandbox   bool     `json:"sandbox"`
+	SandboxRO []string `json:"sandbox_ro"`
+	SandboxRW []string `json:"sandbox_rw"`
 }
 
 func (s *Server) handleUpsertApp(w http.ResponseWriter, r *http.Request) {
@@ -62,12 +96,16 @@ func (s *Server) handleUpsertApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err := s.pool.Exec(r.Context(), `
-		INSERT INTO apps (user_id, local_id, name, command, cwd, autostart, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, now())
+		INSERT INTO apps (user_id, local_id, name, command, cwd, autostart,
+		                  sandbox, sandbox_ro, sandbox_rw, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
 		ON CONFLICT (user_id, local_id) DO UPDATE SET
 			name = EXCLUDED.name, command = EXCLUDED.command, cwd = EXCLUDED.cwd,
-			autostart = EXCLUDED.autostart, updated_at = now()
-	`, user.ID, localID, req.Name, req.Command, req.Cwd, req.Autostart)
+			autostart = EXCLUDED.autostart, sandbox = EXCLUDED.sandbox,
+			sandbox_ro = EXCLUDED.sandbox_ro, sandbox_rw = EXCLUDED.sandbox_rw,
+			updated_at = now()
+	`, user.ID, localID, req.Name, req.Command, req.Cwd, req.Autostart,
+		req.Sandbox, joinPaths(req.SandboxRO), joinPaths(req.SandboxRW))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "save app failed")
 		return

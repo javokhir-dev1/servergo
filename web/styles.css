@@ -837,6 +837,8 @@ td.url a:hover { text-decoration: underline; }
 }
 .pill.on { color: var(--green); border-color: rgba(46,204,143,.4); }
 .pill.warn { color: #ffd08a; border-color: rgba(255,180,58,.4); background: rgba(255,180,58,.1); }
+.pill.clickable { cursor: pointer; }
+.pill.clickable:hover { filter: brightness(1.25); }
 
 /* Diagnostika */
 .diag-summary {

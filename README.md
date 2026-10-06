@@ -76,6 +76,11 @@ kerak emas):
   o'zgarmaydi — ularda jadvalda sariq `YO'Q` belgisi ko'rinadi va bir
   bosishda yoqiladi
 
+Jadvaldagi sandbox belgisini bosib bir bosishda yoqish/o'chirish mumkin
+(ishlab turgan ilova qayta ishga tushadi, shuning uchun tasdiqlatiladi).
+Sozlama bulutli sinxronizatsiyaga ham kiradi — tiklangan ilova izolyatsiyasiz
+qaytib qolmaydi.
+
 Tarmoq ataylab ochiq qoldirilgan: ilovalar portga quloq solishi va internetga
 chiqishi kerak (tunnel shunga tayanadi). Demak sandbox'dagi ilova hali ham
 `localhost`dagi boshqa portlarni (postgres, redis, qo'shni API) ko'radi.

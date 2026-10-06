@@ -192,7 +192,11 @@ func cleanPaths(list []string) []string {
 
 var nameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9 ._-]{0,63}$`)
 
-func (s *Service) validate(in *AppInput, excludeID string) error {
+// validate — kiritmani tekshiradi. checkPaths=false bo'lsa sandbox
+// yo'llarining mavjudligi tekshirilmaydi: bulutdan tiklanayotgan ilovaning
+// papkasi bu mashinada hali bo'lmasligi mumkin, lekin sozlamani yo'qotib
+// yuborish (ya'ni ilovani jim izolyatsiyasiz qoldirish) xavfliroq.
+func (s *Service) validate(in *AppInput, excludeID string, checkPaths bool) error {
 	in.Name = strings.TrimSpace(in.Name)
 	in.Command = strings.TrimSpace(in.Command)
 	in.Cwd = strings.TrimSpace(in.Cwd)
@@ -208,11 +212,13 @@ func (s *Service) validate(in *AppInput, excludeID string) error {
 		if in.Cwd == "" {
 			return errors.New("sandbox yoqilgan bo'lsa ishchi papka ko'rsatilishi shart — ilova aynan shu papkani ko'radi")
 		}
-		if err := sandbox.Available(); err != nil {
-			return errors.New("sandbox ishlamaydi: " + err.Error())
-		}
-		if err := sandbox.Validate(sandbox.Spec{Cwd: in.Cwd, RO: in.SandboxRO, RW: in.SandboxRW}); err != nil {
-			return err
+		if checkPaths {
+			if err := sandbox.Available(); err != nil {
+				return errors.New("sandbox ishlamaydi: " + err.Error())
+			}
+			if err := sandbox.Validate(sandbox.Spec{Cwd: in.Cwd, RO: in.SandboxRO, RW: in.SandboxRW}); err != nil {
+				return err
+			}
 		}
 	} else if len(in.SandboxRW) > 0 || len(in.SandboxRO) > 0 {
 		return errors.New("qo'shimcha yo'llar faqat sandbox yoqilganda ma'noga ega")
@@ -231,7 +237,7 @@ func (s *Service) CreateApp(in AppInput) (*AppView, error) {
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
-	if err := s.validate(&in, ""); err != nil {
+	if err := s.validate(&in, "", true); err != nil {
 		return nil, err
 	}
 	a := store.App{
@@ -260,7 +266,7 @@ func (s *Service) ImportApp(id string, in AppInput) (*AppView, error) {
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
-	if err := s.validate(&in, id); err != nil {
+	if err := s.validate(&in, id, false); err != nil {
 		return nil, err
 	}
 	a := store.App{
@@ -289,7 +295,7 @@ func (s *Service) UpdateApp(id string, in AppInput) (*AppView, error) {
 	if err != nil {
 		return nil, errors.New("ilova topilmadi")
 	}
-	if err := s.validate(&in, id); err != nil {
+	if err := s.validate(&in, id, true); err != nil {
 		return nil, err
 	}
 	wasRunning := s.mgr.IsRunning(id)

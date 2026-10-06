@@ -53,11 +53,14 @@ func (c *Client) Logout() error {
 }
 
 type AppRecord struct {
-	LocalID   string `json:"local_id"`
-	Name      string `json:"name"`
-	Command   string `json:"command"`
-	Cwd       string `json:"cwd"`
-	Autostart bool   `json:"autostart"`
+	LocalID   string   `json:"local_id"`
+	Name      string   `json:"name"`
+	Command   string   `json:"command"`
+	Cwd       string   `json:"cwd"`
+	Autostart bool     `json:"autostart"`
+	Sandbox   bool     `json:"sandbox"`
+	SandboxRO []string `json:"sandbox_ro"`
+	SandboxRW []string `json:"sandbox_rw"`
 }
 
 func (c *Client) ListApps() ([]AppRecord, error) {

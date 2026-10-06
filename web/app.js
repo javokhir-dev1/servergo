@@ -2192,9 +2192,9 @@ function renderApps() {
         <td class="dim mono">${esc(a.command)}</td>
         <td><span class="status ${esc(a.status)}">${esc(APP_STATUS[a.status] || a.status)}</span></td>
         <td><span class="pill ${a.autostart ? 'on' : ''}">${a.autostart ? 'yoqilgan' : "o'chirilgan"}</span></td>
-        <td><span class="pill ${a.sandbox ? 'on' : 'warn'}" title="${a.sandbox
-          ? "Ilova faqat o'z papkasini ko'radi"
-          : "Ilova butun uy papkasini ko'radi — buzilsa SSH kalitlari va boshqa loyihalarning sirlariga yetadi"}">${a.sandbox ? 'yoqilgan' : "YO'Q"}</span></td>
+        <td><span class="pill clickable ${a.sandbox ? 'on' : 'warn'}" data-asb="${esc(a.id)}" title="${a.sandbox
+          ? "Ilova faqat o'z papkasini ko'radi — o'chirish uchun bosing"
+          : "Ilova butun uy papkasini ko'radi — buzilsa SSH kalitlari va boshqa loyihalarning sirlariga yetadi. Yoqish uchun bosing"}">${a.sandbox ? 'yoqilgan' : "YO'Q"}</span></td>
         <td class="actions">
           ${isRunning
             ? `<button class="act" data-aact="restart" data-aid="${esc(a.id)}" title="Qayta ishga tushirish">↻ Restart</button>
@@ -2332,6 +2332,47 @@ async function appAct(type, id) {
   await refreshApps();
 }
 
+// toggleAppSandbox — jadvaldagi belgidan bir bosishda yoqish/o'chirish.
+// Ishlab turgan ilova qayta ishga tushadi (o'zgarish faqat shunda qo'llanadi),
+// shuning uchun oldin tasdiqlatamiz.
+async function toggleAppSandbox(id) {
+  const a = state.appList.find((x) => x.id === id);
+  if (!a) return;
+
+  const turningOn = !a.sandbox;
+  if (turningOn && !a.cwd) {
+    toast("Sandbox uchun ishchi papka ko'rsatilishi shart — \"Tahrir\" dan qo'shing", 'error');
+    return;
+  }
+  if (state.sandbox && !state.sandbox.available) {
+    toast(`Bu tizimda sandbox ishlamaydi: ${state.sandbox.reason}`, 'error');
+    return;
+  }
+
+  const running = a.status === 'running' || a.status === 'starting';
+  const okd = await confirmDialog({
+    title: turningOn ? 'Sandbox yoqilsinmi?' : "Sandbox o'chirilsinmi?",
+    message: `"${a.name}" — ${turningOn ? 'izolyatsiya yoqiladi' : 'izolyatsiya olib tashlanadi'}`,
+    detail: turningOn
+      ? `Ilova faqat ${a.cwd} papkasini ko'radi. Loyihadan tashqaridagi fayl kerak bo'lsa ishga tushmasligi mumkin — logga qarang.${running ? ' Ilova qayta ishga tushiriladi.' : ''}`
+      : `Ilova yana butun uy papkasini ko'radi.${running ? ' Ilova qayta ishga tushiriladi.' : ''}`,
+    confirmLabel: turningOn ? 'Yoqish' : "O'chirish",
+  });
+  if (!okd) return;
+
+  state.busy = true;
+  const res = await api.appsUpdate(id, {
+    name: a.name, command: a.command, cwd: a.cwd, autostart: a.autostart,
+    sandbox: turningOn,
+    sandboxRo: turningOn ? a.sandboxRo || [] : [],
+    sandboxRw: turningOn ? a.sandboxRw || [] : [],
+  });
+  state.busy = false;
+  if (!res.ok) toast(`Xato: ${res.error}`, 'error');
+  else toast(`"${a.name}" — sandbox ${turningOn ? 'yoqildi' : "o'chirildi"}`, 'success');
+  await refreshApps();
+}
+
 /* ============ Ilovalar: forma ============ */
 
 function openAppForm(id) {
@@ -2426,6 +2467,12 @@ async function saveAppForm() {
 }
 
 $('app-rows').addEventListener('click', (e) => {
+  const sbPill = e.target.closest('[data-asb]');
+  if (sbPill) {
+    e.stopPropagation();
+    toggleAppSandbox(sbPill.dataset.asb);
+    return;
+  }
   const actBtn = e.target.closest('[data-aact]');
   if (actBtn) {
     e.stopPropagation();
