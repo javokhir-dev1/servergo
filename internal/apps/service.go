@@ -159,7 +159,10 @@ type AppInput struct {
 	// Sandbox — ilovani bubblewrap ichida ishga tushirish (uy papkasi
 	// yopiladi, faqat o'z papkasi ko'rinadi).
 	Sandbox bool `json:"sandbox"`
-	// SandboxRW — sandbox ichida qo'shimcha ko'rinadigan yo'llar.
+	// SandboxRO — faqat o'qish uchun qo'shimcha yo'llar (monorepo
+	// node_modules, site-packages, umumiy .env...).
+	SandboxRO []string `json:"sandboxRo"`
+	// SandboxRW — yozish ham mumkin bo'lgan qo'shimcha yo'llar.
 	SandboxRW []string `json:"sandboxRw"`
 }
 
@@ -176,6 +179,17 @@ func (s *Service) SandboxStatus() SandboxStatus {
 	return SandboxStatus{Available: true}
 }
 
+// cleanPaths — bo'sh qatorlarni va bo'shliqlarni tozalaydi.
+func cleanPaths(list []string) []string {
+	out := make([]string, 0, len(list))
+	for _, p := range list {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 var nameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9 ._-]{0,63}$`)
 
 func (s *Service) validate(in *AppInput, excludeID string) error {
@@ -188,13 +202,8 @@ func (s *Service) validate(in *AppInput, excludeID string) error {
 	if in.Command == "" {
 		return errors.New("buyruq bo'sh bo'lmasligi kerak")
 	}
-	clean := make([]string, 0, len(in.SandboxRW))
-	for _, p := range in.SandboxRW {
-		if p = strings.TrimSpace(p); p != "" {
-			clean = append(clean, p)
-		}
-	}
-	in.SandboxRW = clean
+	in.SandboxRO = cleanPaths(in.SandboxRO)
+	in.SandboxRW = cleanPaths(in.SandboxRW)
 	if in.Sandbox {
 		if in.Cwd == "" {
 			return errors.New("sandbox yoqilgan bo'lsa ishchi papka ko'rsatilishi shart — ilova aynan shu papkani ko'radi")
@@ -202,10 +211,10 @@ func (s *Service) validate(in *AppInput, excludeID string) error {
 		if err := sandbox.Available(); err != nil {
 			return errors.New("sandbox ishlamaydi: " + err.Error())
 		}
-		if err := sandbox.Validate(sandbox.Spec{Cwd: in.Cwd, RW: in.SandboxRW}); err != nil {
+		if err := sandbox.Validate(sandbox.Spec{Cwd: in.Cwd, RO: in.SandboxRO, RW: in.SandboxRW}); err != nil {
 			return err
 		}
-	} else if len(in.SandboxRW) > 0 {
+	} else if len(in.SandboxRW) > 0 || len(in.SandboxRO) > 0 {
 		return errors.New("qo'shimcha yo'llar faqat sandbox yoqilganda ma'noga ega")
 	}
 	taken, err := s.st.NameTaken(in.Name, excludeID)
@@ -232,6 +241,7 @@ func (s *Service) CreateApp(in AppInput) (*AppView, error) {
 		Cwd:       in.Cwd,
 		Autostart: in.Autostart,
 		Sandbox:   in.Sandbox,
+		SandboxRO: in.SandboxRO,
 		SandboxRW: in.SandboxRW,
 		Status:    "stopped",
 		CreatedAt: time.Now(),
@@ -260,6 +270,7 @@ func (s *Service) ImportApp(id string, in AppInput) (*AppView, error) {
 		Cwd:       in.Cwd,
 		Autostart: in.Autostart,
 		Sandbox:   in.Sandbox,
+		SandboxRO: in.SandboxRO,
 		SandboxRW: in.SandboxRW,
 		Status:    "stopped",
 		CreatedAt: time.Now(),
@@ -286,7 +297,7 @@ func (s *Service) UpdateApp(id string, in AppInput) (*AppView, error) {
 		_ = s.mgr.Stop(id)
 	}
 	a.Name, a.Command, a.Cwd, a.Autostart = in.Name, in.Command, in.Cwd, in.Autostart
-	a.Sandbox, a.SandboxRW = in.Sandbox, in.SandboxRW
+	a.Sandbox, a.SandboxRO, a.SandboxRW = in.Sandbox, in.SandboxRO, in.SandboxRW
 	if err := s.st.SaveApp(a); err != nil {
 		return nil, err
 	}

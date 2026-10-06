@@ -139,7 +139,7 @@ func (m *Manager) spawn(a store.App, restarts int) error {
 			m.setStatus(a.ID, "error", "sandbox: "+err.Error())
 			return err
 		}
-		argv, err := sandbox.Argv(sandbox.Spec{Cwd: cwd, RW: a.SandboxRW}, a.Command, sandboxInfoFD)
+		argv, err := sandbox.Argv(sandbox.Spec{Cwd: cwd, RO: a.SandboxRO, RW: a.SandboxRW}, a.Command, sandboxInfoFD)
 		if err != nil {
 			m.setStatus(a.ID, "error", "sandbox: "+err.Error())
 			return err

@@ -48,7 +48,8 @@ const BinName = "bwrap"
 // Spec — bitta ilova uchun sandbox parametrlari.
 type Spec struct {
 	Cwd string   // loyiha papkasi — yozish huquqi bilan ko'rinadi (shart)
-	RW  []string // qo'shimcha yo'llar (ma'lumot papkasi, tashqi skript...)
+	RO  []string // faqat o'qish uchun: monorepo node_modules, site-packages, .env...
+	RW  []string // yozish ham mumkin: yuklanmalar papkasi, tashqi baza fayli...
 }
 
 // Info — bwrap --info-fd orqali qaytaradigan ma'lumot.
@@ -84,8 +85,8 @@ func Validate(sp Spec) error {
 		return err
 	}
 	home := homeDir()
-	for _, raw := range sp.RW {
-		if _, err := checkRW(raw, home); err != nil {
+	for _, raw := range append(append([]string{}, sp.RO...), sp.RW...) {
+		if _, err := checkExtra(raw, home); err != nil {
 			return err
 		}
 	}
@@ -161,8 +162,18 @@ func Argv(sp Spec, command string, infoFD int) ([]string, error) {
 	if home != "" {
 		a = append(a, "--tmpfs", home)
 	}
+	// Tartib muhim: avval faqat o'qish, keyin yozish mumkin, oxirida ishchi
+	// papka. Shunda ishchi papka o'zidan kattaroq read-only yo'l ichida
+	// bo'lsa ham (monorepo ildizi kabi) yoziladigan bo'lib qoladi.
+	for _, raw := range sp.RO {
+		p, err := checkExtra(raw, home)
+		if err != nil {
+			return nil, err
+		}
+		a = append(a, "--ro-bind", p, p)
+	}
 	for _, raw := range sp.RW {
-		p, err := checkRW(raw, home)
+		p, err := checkExtra(raw, home)
 		if err != nil {
 			return nil, err
 		}
@@ -240,14 +251,22 @@ func checkDir(raw, label string) (string, error) {
 	return p, nil
 }
 
-// checkRW — qo'shimcha yo'lni tekshiradi. Sandbox'ning ma'nosini yo'q
-// qiladigan yo'llarni (uy papkasining o'zi, SSH kalitlari, ServerGo'ning
+// checkExtra — qo'shimcha yo'lni tekshiradi (papka ham, fayl ham bo'lishi
+// mumkin: ba'zi ilovaga faqat bitta `.env` kerak). Sandbox'ning ma'nosini
+// yo'q qiladigan yo'llarni (uy papkasining o'zi, SSH kalitlari, ServerGo'ning
 // tokenlari) ataylab to'sadi — aks holda bitta e'tiborsiz qo'shimcha butun
 // himoyani bekor qilardi.
-func checkRW(raw, home string) (string, error) {
-	p, err := checkDir(raw, "qo'shimcha yo'l")
-	if err != nil {
-		return "", err
+func checkExtra(raw, home string) (string, error) {
+	p := strings.TrimSpace(raw)
+	if p == "" {
+		return "", errors.New("qo'shimcha yo'l bo'sh")
+	}
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("qo'shimcha yo'l to'liq bo'lishi kerak: %s", p)
+	}
+	p = filepath.Clean(p)
+	if _, err := os.Stat(p); err != nil {
+		return "", fmt.Errorf("qo'shimcha yo'l topilmadi: %s", p)
 	}
 	forbidden := []string{"/", "/etc", "/usr", "/var", "/run", "/proc", "/sys", "/dev", "/boot", "/root"}
 	if home != "" {

@@ -84,12 +84,13 @@ Ilovalar (pm2'ga bog'liq emas — ServerGo'ning o'z boshqaruvchisi):
   apps [list] [-w]                    ro'yxat (-w — jonli kuzatish)
   apps create <nom> <buyruq...>       masalan: apps create bot "node bot.js" -a
     [-c ishchi-papka] [-a]             -c: ishchi papka (standart: uy papkasi)
-    [-r yo'l] [--no-sandbox]            -a: avtostart yoqish
-                                        -r: sandbox ichida qo'shimcha
-                                            ko'rinadigan yo'l (bir necha marta)
+    [-r yo'l] [--rw yo'l]               -a: avtostart yoqish
+    [--no-sandbox]                      -r: sandbox ichida qo'shimcha yo'l,
+                                            faqat o'qish (bir necha marta)
+                                        --rw: yozish ham mumkin bo'lgan yo'l
                                         --no-sandbox: izolyatsiyasiz ishlatish
   apps sandbox <id|nom> on|off        mavjud ilovada sandbox'ni yoqish/o'chirish
-    [-r yo'l]
+    [-r yo'l] [--rw yo'l]
   apps start   <id|nom>
   apps stop    <id|nom>
   apps restart <id|nom>

@@ -25,8 +25,10 @@ type App struct {
 	// Sandbox — ilova bubblewrap ichida, uy papkasi yopilgan holda ishlaydi.
 	// Qarang: internal/apps/sandbox.
 	Sandbox bool `json:"sandbox"`
-	// SandboxRW — sandbox ichida qo'shimcha ko'rinadigan (yozish mumkin)
-	// yo'llar: loyihadan tashqaridagi ma'lumot papkasi, tashqi skript...
+	// SandboxRO — sandbox ichida faqat o'qish uchun ko'rinadigan yo'llar:
+	// monorepo ildizidagi node_modules, python site-packages, umumiy .env...
+	SandboxRO []string `json:"sandboxRo"`
+	// SandboxRW — yozish ham mumkin bo'lgan qo'shimcha yo'llar.
 	SandboxRW []string  `json:"sandboxRw"`
 	Status    string    `json:"status"` // stopped | starting | running | error
 	LastError string    `json:"lastError"`
@@ -81,6 +83,7 @@ CREATE TABLE IF NOT EXISTS apps (
   autostart   INTEGER NOT NULL DEFAULT 0,
   sandbox     INTEGER NOT NULL DEFAULT 0,
   sandbox_rw  TEXT NOT NULL DEFAULT '',
+  sandbox_ro  TEXT NOT NULL DEFAULT '',
   last_error  TEXT NOT NULL DEFAULT '',
   created_at  TEXT NOT NULL
 );`)
@@ -91,6 +94,7 @@ CREATE TABLE IF NOT EXISTS apps (
 	for _, c := range []string{
 		`sandbox INTEGER NOT NULL DEFAULT 0`,
 		`sandbox_rw TEXT NOT NULL DEFAULT ''`,
+		`sandbox_ro TEXT NOT NULL DEFAULT ''`,
 	} {
 		if err := s.ensureColumn(c); err != nil {
 			return err
@@ -109,19 +113,20 @@ func (s *Store) ensureColumn(def string) error {
 	return err
 }
 
-const appCols = `id, name, command, cwd, status, autostart, sandbox, sandbox_rw, last_error, created_at`
+const appCols = `id, name, command, cwd, status, autostart, sandbox, sandbox_rw, sandbox_ro, last_error, created_at`
 
 func scanApp(row interface{ Scan(...any) error }) (App, error) {
 	var a App
 	var auto, sb int
-	var rw, created string
-	err := row.Scan(&a.ID, &a.Name, &a.Command, &a.Cwd, &a.Status, &auto, &sb, &rw, &a.LastError, &created)
+	var rw, ro, created string
+	err := row.Scan(&a.ID, &a.Name, &a.Command, &a.Cwd, &a.Status, &auto, &sb, &rw, &ro, &a.LastError, &created)
 	if err != nil {
 		return a, err
 	}
 	a.Autostart = auto == 1
 	a.Sandbox = sb == 1
 	a.SandboxRW = splitPaths(rw)
+	a.SandboxRO = splitPaths(ro)
 	a.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	return a, nil
 }
@@ -168,13 +173,15 @@ func (s *Store) SaveApp(a App) error {
 		a.CreatedAt = time.Now()
 	}
 	_, err := s.db.Exec(`
-INSERT INTO apps (`+appCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)
+INSERT INTO apps (`+appCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   name=excluded.name, command=excluded.command, cwd=excluded.cwd,
   status=excluded.status, autostart=excluded.autostart,
   sandbox=excluded.sandbox, sandbox_rw=excluded.sandbox_rw,
+  sandbox_ro=excluded.sandbox_ro,
   last_error=excluded.last_error`,
-		a.ID, a.Name, a.Command, a.Cwd, a.Status, auto, sb, joinPaths(a.SandboxRW), a.LastError,
+		a.ID, a.Name, a.Command, a.Cwd, a.Status, auto, sb,
+		joinPaths(a.SandboxRW), joinPaths(a.SandboxRO), a.LastError,
 		a.CreatedAt.Format(time.RFC3339))
 	return err
 }

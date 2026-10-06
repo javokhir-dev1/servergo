@@ -120,3 +120,53 @@ func TestSandboxHidesSecrets(t *testing.T) {
 		t.Errorf("SANDBOX TESHIK — uy papkasidagi fayl o'qildi: %s", got)
 	}
 }
+
+// TestReadOnlyParentKeepsCwdWritable — monorepo holati: ildiz faqat o'qish
+// uchun beriladi (node_modules kerak), lekin ishchi papka uning ichida va
+// yoziladigan bo'lib qolishi kerak. bwrap argumentlarni tartib bilan
+// qo'llaydi, shuning uchun bu tartibga bog'liq.
+func TestReadOnlyParentKeepsCwdWritable(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skipf("bwrap ishlamaydi: %v", err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "umumiy.txt"), []byte("ildiz"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cwd := filepath.Join(root, "ilova")
+	if err := os.Mkdir(cwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	argv, err := Argv(Spec{Cwd: cwd, RO: []string{root}},
+		"cat "+filepath.Join(root, "umumiy.txt")+
+			"; echo yangi > ./ichki.txt && echo CWD-YOZILDI"+
+			"; echo buzdim > "+filepath.Join(root, "umumiy.txt")+" 2>/dev/null && echo RO-TESHIK", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+	got := string(out)
+	if !strings.Contains(got, "ildiz") {
+		t.Errorf("read-only yo'l o'qilmadi: %s", got)
+	}
+	if !strings.Contains(got, "CWD-YOZILDI") {
+		t.Errorf("ishchi papkaga yozib bo'lmadi (read-only ildiz uni ham yopib qo'ygan): %s", got)
+	}
+	if strings.Contains(got, "RO-TESHIK") {
+		t.Errorf("read-only yo'lga yozib bo'ldi: %s", got)
+	}
+}
+
+// TestExtraPathAcceptsFile — ba'zi ilovaga faqat bitta fayl kerak
+// (masalan monorepo ildizidagi umumiy .env).
+func TestExtraPathAcceptsFile(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, ".env")
+	if err := os.WriteFile(f, []byte("A=1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(Spec{Cwd: dir, RO: []string{f}}); err != nil {
+		t.Errorf("fayl qo'shimcha yo'l sifatida rad etildi: %v", err)
+	}
+}

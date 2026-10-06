@@ -14,6 +14,7 @@ const BinName = "bwrap"
 
 type Spec struct {
 	Cwd string
+	RO  []string
 	RW  []string
 }
 

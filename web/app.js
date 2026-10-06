@@ -2243,8 +2243,11 @@ function renderAppDetail() {
       <dt>Sandbox</dt><dd>${a.sandbox
         ? `yoqilgan — faqat <span class="mono">${esc(a.cwd)}</span> ko'rinadi`
         : "<span class=\"pill warn\">o'chirilgan</span> — ilova butun uy papkasini ko'radi"}</dd>
+      ${a.sandbox && (a.sandboxRo || []).length
+        ? `<dt>Qo'shimcha (o'qish)</dt><dd class="mono">${esc((a.sandboxRo || []).join(', '))}</dd>`
+        : ''}
       ${a.sandbox && (a.sandboxRw || []).length
-        ? `<dt>Qo'shimcha yo'llar</dt><dd class="mono">${esc((a.sandboxRw || []).join(', '))}</dd>`
+        ? `<dt>Qo'shimcha (yozish)</dt><dd class="mono">${esc((a.sandboxRw || []).join(', '))}</dd>`
         : ''}
       ${a.lastError ? `<dt>Oxirgi xato</dt><dd>${esc(a.lastError)}</dd>` : ''}
       <dt>Yaratilgan</dt><dd>${formatDate(a.createdAt)}</dd>
@@ -2343,6 +2346,7 @@ function openAppForm(id) {
   // Yangi ilova uchun sandbox standart holatda yoqilgan — himoyani
   // ataylab o'chirish kerak bo'lsin, yoqishni esdan chiqarish emas.
   $('af-sandbox').checked = a ? a.sandbox : true;
+  $('af-ro').value = a && a.sandboxRo ? a.sandboxRo.join('\n') : '';
   $('af-rw').value = a && a.sandboxRw ? a.sandboxRw.join('\n') : '';
   syncAppSandboxFields();
 
@@ -2363,6 +2367,10 @@ function setAppFormNote(msg, kind = '') {
   n.hidden = !msg;
 }
 
+function linesOf(id) {
+  return $(id).value.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
 function appFormInput() {
   const sandbox = $('af-sandbox').checked;
   return {
@@ -2371,9 +2379,8 @@ function appFormInput() {
     cwd: $('af-cwd').value.trim(),
     autostart: $('af-autostart').checked,
     sandbox,
-    sandboxRw: sandbox
-      ? $('af-rw').value.split('\n').map((l) => l.trim()).filter(Boolean)
-      : [],
+    sandboxRo: sandbox ? linesOf('af-ro') : [],
+    sandboxRw: sandbox ? linesOf('af-rw') : [],
   };
 }
 
@@ -2381,11 +2388,13 @@ function appFormInput() {
 // maydoni ma'nosiz; tizimda bwrap bo'lmasa belgini umuman bermaymiz.
 function syncAppSandboxFields() {
   const on = $('af-sandbox').checked;
+  $('af-ro-field').hidden = !on;
   $('af-rw-field').hidden = !on;
   const st = state.sandbox;
   if (st && !st.available) {
     $('af-sandbox').checked = false;
     $('af-sandbox').disabled = true;
+    $('af-ro-field').hidden = true;
     $('af-rw-field').hidden = true;
     $('af-sandbox-hint').innerHTML = `Bu tizimda sandbox ishlamaydi: ${esc(st.reason || '')}`;
   }

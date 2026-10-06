@@ -55,10 +55,13 @@ kerak emas):
 - **`XDG_RUNTIME_DIR` o'rniga bo'sh tmpfs** — haqiqiy `/run/user/<uid>` ichida
   `systemd --user` va D-Bus sokitlari bor, ular orqali sandbox'dan chiqib
   ketish mumkin edi
-- **Qo'shimcha yo'llar** — loyihadan tashqaridagi ma'lumot papkasi yoki tashqi
-  skript kerak bo'lsa, formada (yoki `-r` bilan) qo'shiladi. Himoyani bekor
-  qiladigan yo'llar (`~`, `~/.ssh`, `~/.config/servergo`, `/etc`...) ataylab
-  rad etiladi
+- **Qo'shimcha yo'llar** — loyihadan tashqaridagi narsa kerak bo'lsa (monorepo
+  ildizidagi `node_modules`, python `site-packages`, umumiy `.env`, qo'shni
+  loyihadagi ma'lumot fayli), formada yoki `-r` bilan **faqat o'qish**
+  huquqida, `--rw` bilan yozish huquqida qo'shiladi. Papka ham, bitta fayl ham
+  bo'lishi mumkin. Read-only yo'l ishchi papkadan kattaroq bo'lsa ham ishchi
+  papka yoziladigan bo'lib qoladi. Himoyani bekor qiladigan yo'llar (`~`,
+  `~/.ssh`, `~/.config/servergo`, `/etc`...) ataylab rad etiladi
 - **Yumshoq to'xtatish saqlanadi** — SIGTERM sandbox ichidagi jarayonlarga
   yetib boradi (PID namespace bo'yicha topiladi), ya'ni ilova bazani yopib,
   navbatni tugatib chiqadi. 10 soniyada javob bermasa SIGKILL
@@ -72,7 +75,8 @@ chiqishi kerak (tunnel shunga tayanadi). Demak sandbox'dagi ilova hali ham
 
 ```
 servergo apps create bot "node bot.js" -c /home/user/bot -a      # sandbox avtomatik
-servergo apps create bot "node bot.js" -c /home/user/bot -r /home/user/data
+servergo apps create api "node dist/main.js" -c /repo/apps/api -r /repo/node_modules
+servergo apps create bot "node bot.js" -c /home/user/bot --rw /home/user/yuklanmalar
 servergo apps create eski "node x.js" -c /home/user/x --no-sandbox
 servergo apps sandbox bot on                                      # mavjud ilovada yoqish
 ```
@@ -400,8 +404,9 @@ servergo ram kill 12345        # jarayon daraxtini to'xtatish (pid)
 servergo apps                                  # ilovalar ro'yxati (pm2'ga bog'liq emas)
 servergo apps create bot "node bot.js" -c /home/user/bot -a   # -a: avtostart,
                                                # -c bo'lsa sandbox o'zi yoqiladi
-servergo apps create bot "node bot.js" -c /home/user/bot -r /home/user/data
-                                               # -r: sandbox'da qo'shimcha yo'l
+servergo apps create api "node dist/main.js" -c /repo/apps/api -r /repo/node_modules
+                                               # -r: qo'shimcha yo'l (o'qish),
+                                               # --rw: yozish ham mumkin
 servergo apps sandbox bot off                  # izolyatsiyani o'chirish
 servergo apps restart bot                      # nom yoki id bo'yicha
 servergo apps logs bot

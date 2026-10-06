@@ -15,6 +15,7 @@ type App struct {
 	Cwd       string   `json:"cwd"`
 	Autostart bool     `json:"autostart"`
 	Sandbox   bool     `json:"sandbox"`
+	SandboxRO []string `json:"sandboxRo"`
 	SandboxRW []string `json:"sandboxRw"`
 	Status    string   `json:"status"`
 	LastError string   `json:"lastError"`
@@ -132,11 +133,12 @@ func appsListCmd(c *client) error {
 func appsCreateCmd(c *client, args []string) error {
 	autostart, args := takeBoolFlag(args, "-a")
 	noSandbox, args := takeBoolFlag(args, "--no-sandbox")
-	rw, args := takeValueFlags(args, "-r")
+	ro, args := takeValueFlags(args, "-r")
+	rw, args := takeValueFlags(args, "--rw")
 	cwd, _, args := takeValueFlag(args, "-c")
 
 	if len(args) < 2 {
-		return errors.New("foydalanish: apps create <nom> <buyruq...> [-c ishchi-papka] [-a] [-r qo'shimcha-yo'l] [--no-sandbox]")
+		return errors.New("foydalanish: apps create <nom> <buyruq...> [-c ishchi-papka] [-a] [-r faqat-o'qish-yo'l] [--rw yoziladigan-yo'l] [--no-sandbox]")
 	}
 	name := args[0]
 	command := strings.Join(args[1:], " ")
@@ -152,7 +154,7 @@ func appsCreateCmd(c *client, args []string) error {
 	var a App
 	if err := c.postInto("/api/apps/create", map[string]any{
 		"name": name, "command": command, "cwd": cwd, "autostart": autostart,
-		"sandbox": sandbox, "sandboxRw": rw,
+		"sandbox": sandbox, "sandboxRo": ro, "sandboxRw": rw,
 	}, &a); err != nil {
 		return err
 	}
@@ -166,9 +168,10 @@ func appsCreateCmd(c *client, args []string) error {
 
 // appsSandboxCmd — mavjud ilovada sandbox'ni yoqish/o'chirish.
 func appsSandboxCmd(c *client, args []string) error {
-	rw, args := takeValueFlags(args, "-r")
+	ro, args := takeValueFlags(args, "-r")
+	rw, args := takeValueFlags(args, "--rw")
 	if len(args) < 2 {
-		return errors.New("foydalanish: apps sandbox <id|nom> on|off [-r qo'shimcha-yo'l]")
+		return errors.New("foydalanish: apps sandbox <id|nom> on|off [-r faqat-o'qish-yo'l] [--rw yoziladigan-yo'l]")
 	}
 	var on bool
 	switch strings.ToLower(args[1]) {
@@ -188,18 +191,22 @@ func appsSandboxCmd(c *client, args []string) error {
 	if err != nil {
 		return err
 	}
-	paths := a.SandboxRW
+	roPaths, rwPaths := a.SandboxRO, a.SandboxRW
+	if len(ro) > 0 {
+		roPaths = ro
+	}
 	if len(rw) > 0 {
-		paths = rw
+		rwPaths = rw
 	}
 	if !on {
-		paths = nil
+		roPaths, rwPaths = nil, nil
 	}
 
 	var out App
 	if err := c.postInto("/api/apps/update", map[string]any{
 		"id": a.ID, "name": a.Name, "command": a.Command, "cwd": a.Cwd,
-		"autostart": a.Autostart, "sandbox": on, "sandboxRw": paths,
+		"autostart": a.Autostart, "sandbox": on,
+		"sandboxRo": roPaths, "sandboxRw": rwPaths,
 	}, &out); err != nil {
 		return err
 	}
@@ -208,8 +215,11 @@ func appsSandboxCmd(c *client, args []string) error {
 		state = "yoqildi"
 	}
 	fmt.Printf("'%s' — sandbox %s", out.Name, state)
+	if out.Sandbox && len(out.SandboxRO) > 0 {
+		fmt.Printf(" (o'qish: %s)", strings.Join(out.SandboxRO, ", "))
+	}
 	if out.Sandbox && len(out.SandboxRW) > 0 {
-		fmt.Printf(" (qo'shimcha: %s)", strings.Join(out.SandboxRW, ", "))
+		fmt.Printf(" (yozish: %s)", strings.Join(out.SandboxRW, ", "))
 	}
 	fmt.Println()
 	if a.Status == "running" || a.Status == "starting" {
