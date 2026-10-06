@@ -91,6 +91,10 @@ Ilovalar (pm2'ga bog'liq emas — ServerGo'ning o'z boshqaruvchisi):
                                         --no-sandbox: izolyatsiyasiz ishlatish
   apps sandbox <id|nom> on|off        mavjud ilovada sandbox'ni yoqish/o'chirish
     [-r yo'l] [--rw yo'l]
+  apps net <id|nom> on|off            tarmoq izolyatsiyasi: ilovaga alohida
+    [-p host-porti]                   tarmoq namespace, hostning localhost'i
+                                      yopiladi. -p bilan ko'rsatilgan portlar
+                                      (masalan -p 5432 -p 6379) ochiq qoladi
   apps start   <id|nom>
   apps stop    <id|nom>
   apps restart <id|nom>

@@ -2194,7 +2194,7 @@ function renderApps() {
         <td><span class="pill ${a.autostart ? 'on' : ''}">${a.autostart ? 'yoqilgan' : "o'chirilgan"}</span></td>
         <td><span class="pill clickable ${a.sandbox ? 'on' : 'warn'}" data-asb="${esc(a.id)}" title="${a.sandbox
           ? "Ilova faqat o'z papkasini ko'radi — o'chirish uchun bosing"
-          : "Ilova butun uy papkasini ko'radi — buzilsa SSH kalitlari va boshqa loyihalarning sirlariga yetadi. Yoqish uchun bosing"}">${a.sandbox ? 'yoqilgan' : "YO'Q"}</span></td>
+          : "Ilova butun uy papkasini ko'radi — buzilsa SSH kalitlari va boshqa loyihalarning sirlariga yetadi. Yoqish uchun bosing"}">${a.sandbox ? (a.netIsolate ? 'yoqilgan + tarmoq' : 'yoqilgan') : "YO'Q"}</span></td>
         <td class="actions">
           ${isRunning
             ? `<button class="act" data-aact="restart" data-aid="${esc(a.id)}" title="Qayta ishga tushirish">↻ Restart</button>
@@ -2243,6 +2243,13 @@ function renderAppDetail() {
       <dt>Sandbox</dt><dd>${a.sandbox
         ? `yoqilgan — faqat <span class="mono">${esc(a.cwd)}</span> ko'rinadi`
         : "<span class=\"pill warn\">o'chirilgan</span> — ilova butun uy papkasini ko'radi"}</dd>
+      ${a.sandbox
+        ? `<dt>Tarmoq</dt><dd>${a.netIsolate
+            ? `alohida — hostning localhost'i ${(a.netHostPorts || []).length
+                ? `yopiq, faqat <span class="mono">${esc((a.netHostPorts || []).join(', '))}</span> portlari ochiq`
+                : 'butunlay yopiq'}`
+            : "hostniki — localhost'dagi barcha portlar ko'rinadi"}</dd>`
+        : ''}
       ${a.sandbox && (a.sandboxRo || []).length
         ? `<dt>Qo'shimcha (o'qish)</dt><dd class="mono">${esc((a.sandboxRo || []).join(', '))}</dd>`
         : ''}
@@ -2366,6 +2373,8 @@ async function toggleAppSandbox(id) {
     sandbox: turningOn,
     sandboxRo: turningOn ? a.sandboxRo || [] : [],
     sandboxRw: turningOn ? a.sandboxRw || [] : [],
+    netIsolate: turningOn && !!a.netIsolate,
+    netHostPorts: turningOn ? a.netHostPorts || [] : [],
   });
   state.busy = false;
   if (!res.ok) toast(`Xato: ${res.error}`, 'error');
@@ -2387,6 +2396,8 @@ function openAppForm(id) {
   // Yangi ilova uchun sandbox standart holatda yoqilgan — himoyani
   // ataylab o'chirish kerak bo'lsin, yoqishni esdan chiqarish emas.
   $('af-sandbox').checked = a ? a.sandbox : true;
+  $('af-net').checked = a ? !!a.netIsolate : false;
+  $('af-net-ports').value = a && a.netHostPorts ? a.netHostPorts.join(', ') : '';
   $('af-ro').value = a && a.sandboxRo ? a.sandboxRo.join('\n') : '';
   $('af-rw').value = a && a.sandboxRw ? a.sandboxRw.join('\n') : '';
   syncAppSandboxFields();
@@ -2422,6 +2433,10 @@ function appFormInput() {
     sandbox,
     sandboxRo: sandbox ? linesOf('af-ro') : [],
     sandboxRw: sandbox ? linesOf('af-rw') : [],
+    netIsolate: sandbox && $('af-net').checked,
+    netHostPorts: sandbox && $('af-net').checked
+      ? $('af-net-ports').value.split(',').map((p) => parseInt(p.trim(), 10)).filter((n) => n > 0)
+      : [],
   };
 }
 
@@ -2431,12 +2446,21 @@ function syncAppSandboxFields() {
   const on = $('af-sandbox').checked;
   $('af-ro-field').hidden = !on;
   $('af-rw-field').hidden = !on;
+  const st0 = state.sandbox;
+  const netOk = !st0 || st0.netAvailable;
+  $('af-net-row').hidden = !on || !netOk;
+  $('af-net-hint').hidden = !on || !netOk;
+  $('af-net-ports-field').hidden = !on || !netOk || !$('af-net').checked;
+  if (!netOk) $('af-net').checked = false;
   const st = state.sandbox;
   if (st && !st.available) {
     $('af-sandbox').checked = false;
     $('af-sandbox').disabled = true;
     $('af-ro-field').hidden = true;
     $('af-rw-field').hidden = true;
+    $('af-net-row').hidden = true;
+    $('af-net-hint').hidden = true;
+    $('af-net-ports-field').hidden = true;
     $('af-sandbox-hint').innerHTML = `Bu tizimda sandbox ishlamaydi: ${esc(st.reason || '')}`;
   }
 }
@@ -2491,6 +2515,7 @@ $('app-search').addEventListener('input', (e) => {
 });
 
 $('af-sandbox').addEventListener('change', syncAppSandboxFields);
+$('af-net').addEventListener('change', syncAppSandboxFields);
 $('app-new').addEventListener('click', () => openAppForm(null));
 $('app-detail-close').addEventListener('click', closeAppDetail);
 document.querySelectorAll('.tab[data-atab]').forEach((t) => {

@@ -3,17 +3,21 @@
 package sandbox
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // argvString — tekshirishni osonlashtirish uchun argumentlarni bitta qatorga.
 func argvString(t *testing.T, sp Spec) string {
 	t.Helper()
-	argv, err := Argv(sp, "true", 0, 0)
+	argv, err := Argv(sp, "true", NoFD, NoFD)
 	if err != nil {
 		t.Fatalf("Argv: %v", err)
 	}
@@ -51,13 +55,13 @@ func TestArgvSealsHome(t *testing.T) {
 }
 
 func TestArgvRequiresCwd(t *testing.T) {
-	if _, err := Argv(Spec{}, "true", 0, 0); err == nil {
+	if _, err := Argv(Spec{}, "true", NoFD, NoFD); err == nil {
 		t.Fatal("ishchi papkasiz sandbox yaratildi")
 	}
-	if _, err := Argv(Spec{Cwd: "nisbiy/yo'l"}, "true", 0, 0); err == nil {
+	if _, err := Argv(Spec{Cwd: "nisbiy/yo'l"}, "true", NoFD, NoFD); err == nil {
 		t.Fatal("nisbiy yo'l qabul qilindi")
 	}
-	if _, err := Argv(Spec{Cwd: filepath.Join(t.TempDir(), "yo'q")}, "true", 0, 0); err == nil {
+	if _, err := Argv(Spec{Cwd: filepath.Join(t.TempDir(), "yo'q")}, "true", NoFD, NoFD); err == nil {
 		t.Fatal("mavjud bo'lmagan papka qabul qilindi")
 	}
 }
@@ -105,7 +109,7 @@ func TestSandboxHidesSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	argv, err := Argv(Spec{Cwd: cwd}, "cat ochiq.txt; cat "+secret+" 2>&1", 0, 0)
+	argv, err := Argv(Spec{Cwd: cwd}, "cat ochiq.txt; cat "+secret+" 2>&1", NoFD, NoFD)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +145,7 @@ func TestReadOnlyParentKeepsCwdWritable(t *testing.T) {
 	argv, err := Argv(Spec{Cwd: cwd, RO: []string{root}},
 		"cat "+filepath.Join(root, "umumiy.txt")+
 			"; echo yangi > ./ichki.txt && echo CWD-YOZILDI"+
-			"; echo buzdim > "+filepath.Join(root, "umumiy.txt")+" 2>/dev/null && echo RO-TESHIK", 0, 0)
+			"; echo buzdim > "+filepath.Join(root, "umumiy.txt")+" 2>/dev/null && echo RO-TESHIK", NoFD, NoFD)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,13 +201,14 @@ func TestSeccompBlocksEscapeSyscalls(t *testing.T) {
 	defer r.Close()
 
 	cwd := t.TempDir()
+	// Filtr stdin orqali beriladi — manager ham shunday qiladi.
 	argv, err := Argv(Spec{Cwd: cwd},
-		"echo ODDIY-ISH-OK; unshare --mount /bin/true 2>&1 && echo UNSHARE-OTDI", 0, 3)
+		"echo ODDIY-ISH-OK; unshare --mount /bin/true 2>&1 && echo UNSHARE-OTDI", NoFD, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.ExtraFiles = []*os.File{r} // bolada fd 3
+	cmd.Stdin = r
 	out, _ := cmd.CombinedOutput()
 	got := string(out)
 
@@ -212,5 +217,167 @@ func TestSeccompBlocksEscapeSyscalls(t *testing.T) {
 	}
 	if strings.Contains(got, "UNSHARE-OTDI") {
 		t.Errorf("unshare() to'silmadi — seccomp qo'llanmagan: %s", got)
+	}
+}
+
+// TestNetArgvClosesHostByDefault — pasta argumentlari "hamma narsa yopiq"
+// holatidan boshlanishi kerak: pasta'ning o'z standarti -T auto, ya'ni
+// hostning hamma porti ichkaridan ko'rinardi.
+func TestNetArgvClosesHostByDefault(t *testing.T) {
+	if err := NetAvailable(); err != nil {
+		t.Skipf("pasta yo'q: %v", err)
+	}
+	line := argvString(t, Spec{Cwd: t.TempDir(), Net: &NetSpec{}})
+	for _, want := range []string{"-T none", "--map-host-loopback none", "-U none", "-t auto"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("%q yo'q: %s", want, line)
+		}
+	}
+
+	withPorts := argvString(t, Spec{Cwd: t.TempDir(), Net: &NetSpec{HostPorts: []int{5432, 6379}}})
+	if !strings.Contains(withPorts, "-T 5432,6379") {
+		t.Errorf("ruxsat berilgan portlar o'tmadi: %s", withPorts)
+	}
+	if _, err := Argv(Spec{Cwd: t.TempDir(), Net: &NetSpec{HostPorts: []int{70000}}}, "true", NoFD, NoFD); err == nil {
+		t.Error("noto'g'ri port qabul qilindi")
+	}
+}
+
+// TestNetIsolationBlocksHostLoopback — eng muhim shart: izolyatsiya
+// yoqilganda ilova hostning localhost'idagi xizmatlarga ulanmasligi,
+// ruxsat berilgan port esa ishlashi kerak.
+func TestNetIsolationBlocksHostLoopback(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skipf("bwrap ishlamaydi: %v", err)
+	}
+	if err := NetAvailable(); err != nil {
+		t.Skipf("pasta yo'q: %v", err)
+	}
+
+	// Hostda "qo'shni xizmat" rolini o'ynaydigan tinglovchi.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = c.Write([]byte("qo'shni-xizmat\n"))
+			c.Close()
+		}
+	}()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	resolv, err := EnsureResolvConf(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// pasta tarmoqni sozlab olishi uchun biroz kutamiz, so'ng ulanishni
+	// sinaymiz (bash /dev/tcp — qo'shimcha dasturga ehtiyoj yo'q).
+	probe := "sleep 1; bash -c 'exec 3<>/dev/tcp/127.0.0.1/" + strconv.Itoa(port) +
+		"' 2>/dev/null && echo ULANDI || echo ULANMADI"
+
+	run := func(sp Spec) string {
+		argv, err := Argv(sp, probe, NoFD, NoFD)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, _ := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+		return string(out)
+	}
+
+	blocked := run(Spec{Cwd: t.TempDir(), Net: &NetSpec{ResolvConf: resolv}})
+	if !strings.Contains(blocked, "ULANMADI") {
+		t.Errorf("TARMOQ TESHIK — ilova hostning localhost'iga ulandi: %s", blocked)
+	}
+
+	allowed := run(Spec{Cwd: t.TempDir(), Net: &NetSpec{HostPorts: []int{port}, ResolvConf: resolv}})
+	if !strings.Contains(allowed, "ULANDI") {
+		t.Errorf("ruxsat berilgan port ishlamadi: %s", allowed)
+	}
+}
+
+// TestNetIsolationProvidesResolvConf — izolyatsiyada ichkaridagi
+// /etc/resolv.conf pasta'ning nomlar serverini ko'rsatishi kerak. Avval
+// /run/systemd/resolve papkasining bind'i bu faylni yopib qo'yardi va DNS
+// EAI_AGAIN bilan ishlamay qolardi.
+func TestNetIsolationProvidesResolvConf(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skipf("bwrap ishlamaydi: %v", err)
+	}
+	if err := NetAvailable(); err != nil {
+		t.Skipf("pasta yo'q: %v", err)
+	}
+	resolv, err := EnsureResolvConf(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv, err := Argv(Spec{Cwd: t.TempDir(), Net: &NetSpec{ResolvConf: resolv}},
+		"cat /etc/resolv.conf", NoFD, NoFD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := exec.Command(argv[0], argv[1:]...).CombinedOutput()
+	if !strings.Contains(string(out), netDNSAddr) {
+		t.Errorf("ichkaridagi resolv.conf %s ni ko'rsatmadi: %s", netDNSAddr, out)
+	}
+}
+
+// TestFindNSPicksInnermostNamespace — pasta ham, bwrap ham o'z PID
+// namespace'ini yaratadi. FindNS eng ichkaridagisini (ilova turgan joyni)
+// qaytarishi kerak: pasta'ningi olinsa yumshoq to'xtatish ishlamaydi, chunki
+// SIGTERM ilovaga emas, bwrap'ning tashqi jarayoniga borardi.
+func TestFindNSPicksInnermostNamespace(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skipf("bwrap ishlamaydi: %v", err)
+	}
+	if err := NetAvailable(); err != nil {
+		t.Skipf("pasta yo'q: %v", err)
+	}
+	resolv, err := EnsureResolvConf(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv, err := Argv(Spec{Cwd: t.TempDir(), Net: &NetSpec{ResolvConf: resolv}},
+		"sleep 30", NoFD, NoFD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	info, err := FindNS(cmd.Process.Pid, 10*time.Second)
+	if err != nil {
+		t.Fatalf("FindNS: %v", err)
+	}
+	// Ichki namespace'da kamida ikkita jarayon bo'ladi: bwrap'ning init'i va
+	// ilovaning o'zi. pasta'ning namespace'ida esa faqat bitta — shu bilan
+	// to'g'ri topilganini bilamiz.
+	pids := ProcsInNS(info.PidNS)
+	if len(pids) < 2 {
+		t.Fatalf("eng ichki namespace emas: %d jarayon topildi (%v)", len(pids), pids)
+	}
+	// init'dan boshqa jarayonga signal yuborib ko'ramiz (0 — tekshiruv).
+	signalled := 0
+	for _, pid := range pids {
+		if pid == info.ChildPID {
+			continue
+		}
+		if err := syscall.Kill(pid, 0); err == nil {
+			signalled++
+		}
+	}
+	if signalled == 0 {
+		t.Error("init'dan boshqa jarayon topilmadi — SIGTERM hech kimga yetmaydi")
 	}
 }

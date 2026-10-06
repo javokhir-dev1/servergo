@@ -81,9 +81,35 @@ Jadvaldagi sandbox belgisini bosib bir bosishda yoqish/o'chirish mumkin
 Sozlama bulutli sinxronizatsiyaga ham kiradi — tiklangan ilova izolyatsiyasiz
 qaytib qolmaydi.
 
-Tarmoq ataylab ochiq qoldirilgan: ilovalar portga quloq solishi va internetga
-chiqishi kerak (tunnel shunga tayanadi). Demak sandbox'dagi ilova hali ham
-`localhost`dagi boshqa portlarni (postgres, redis, qo'shni API) ko'radi.
+#### Tarmoq izolyatsiyasi
+
+Yuqoridagi himoyalar fayl va jarayonlarni yopadi, lekin `localhost` ochiq
+qolardi: buzilgan ilova `127.0.0.1:5432` ga ulanib qo'shni loyihaning bazasini
+o'qiy olardi, ServerGo'ning o'z API'siga ham yetib borardi. Shuning uchun
+ilovaga alohida **tarmoq namespace** berish mumkin (`passt` paketidagi
+`pasta`, root kerak emas):
+
+- **Hostning `localhost`i yopiladi** — qo'shni ilovalarning portlari,
+  ServerGo API'si, pm2 — hech biri ko'rinmaydi
+- **Internet va o'z porti ishlayveradi** — ilova tinglagan portni pasta
+  avtomatik hostga qaytaradi (tunnel `127.0.0.1:PORT` ga xuddi avvalgidek
+  ulanadi), DNS va tashqi so'rovlar NAT orqali o'tadi
+- **Kerakli xizmatlar ro'yxat bilan ochiladi** — `-p 5432 -p 6379` (yoki
+  formadagi maydon) bilan faqat shu portlar ichkaridan ko'rinadi. Ilovaning
+  `.env` faylini o'zgartirish shart emas: manzil o'sha `127.0.0.1:5432`
+  bo'lib qoladi
+- Sandbox yoqilgan bo'lishi shart (tarmoq izolyatsiyasi uning ustiga qo'shiladi)
+
+```
+servergo apps net bot on -p 5432 -p 6379   # mavjud ilovada yoqish
+servergo apps net bot off
+servergo apps create api "node dist/main.js" -c /srv/api --net -p 5432
+```
+
+Eslatma: `passt` o'rnatilmagan bo'lsa belgi UI'da ko'rinmaydi va CLI sababini
+aytadi. Ubuntu'da `kernel.apparmor_restrict_unprivileged_userns=1` bo'lgani
+uchun `pasta` paket sifatida o'rnatilishi shart — AppArmor profili binarning
+yo'liga bog'langan, boshqa joydan ko'chirib ishlatib bo'lmaydi.
 
 ```
 servergo apps create bot "node bot.js" -c /home/user/bot -a      # sandbox avtomatik
@@ -272,6 +298,8 @@ Fayllar: `~/.config/servergo/vpstunnel/` (Cloudflare bo'limining
 - `bubblewrap` — Ilovalar bo'limidagi sandbox uchun
   (`sudo apt install bubblewrap`). Bo'lmasa bo'lim ishlayveradi, lekin
   sandbox belgisi sababi bilan o'chirilgan ko'rinadi
+- `passt` — sandbox'dagi tarmoq izolyatsiyasi uchun
+  (`sudo apt install passt`); ixtiyoriy
 - webkit2gtk dev fayllari (cgo uchun):
 
 ```bash
@@ -420,6 +448,7 @@ servergo apps create api "node dist/main.js" -c /repo/apps/api -r /repo/node_mod
                                                # -r: qo'shimcha yo'l (o'qish),
                                                # --rw: yozish ham mumkin
 servergo apps sandbox bot off                  # izolyatsiyani o'chirish
+servergo apps net bot on -p 5432               # tarmoqni ham izolyatsiya qilish
 servergo apps restart bot                      # nom yoki id bo'yicha
 servergo apps logs bot
 
@@ -452,7 +481,8 @@ internal/
   apps/store/            SQLite: ilovalar (~/.config/servergo/apps/apps.db)
   apps/manager/          jarayon boshqaruvi: start/stop, avto-restart, loglar
   apps/sandbox/          bubblewrap izolyatsiyasi: bwrap argumentlari, PID
-                         namespace bo'yicha signal yuborish, seccomp filtri
+                         namespace bo'yicha signal yuborish, seccomp filtri,
+                         pasta bilan tarmoq izolyatsiyasi
   pm2/pm2.go             pm2 CLI: jlist, start/stop/restart/delete, flush, ping
   pm2/logs.go            log fayl tail (oxiridan 128 KB)
   sysmon/proc.go         /proc o'qish, meminfo, jarayonlarni guruhlash

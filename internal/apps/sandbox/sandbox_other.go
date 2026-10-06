@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"time"
 )
 
 const BinName = "bwrap"
@@ -16,7 +17,21 @@ type Spec struct {
 	Cwd string
 	RO  []string
 	RW  []string
+	Net *NetSpec
 }
+
+type NetSpec struct {
+	HostPorts  []int
+	ResolvConf string
+}
+
+const NetBinName = "pasta"
+
+const NoFD = -1
+
+func NetAvailable() error { return errUnsupported }
+
+func EnsureResolvConf(dir string) (string, error) { return "", errUnsupported }
 
 type Info struct {
 	ChildPID int    `json:"child-pid"`
@@ -42,3 +57,5 @@ func ParseInfo(r io.Reader) (Info, error) {
 }
 
 func ProcsInNS(inode uint64) []int { return nil }
+
+func FindNS(rootPID int, wait time.Duration) (Info, error) { return Info{}, errUnsupported }

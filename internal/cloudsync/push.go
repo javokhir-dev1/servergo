@@ -51,6 +51,7 @@ func Push(appsSvc *apps.Service, tunSvc *tunnel.Service) (Summary, error) {
 		err := c.UpsertApp(a.ID, AppRecord{
 			Name: a.Name, Command: a.Command, Cwd: a.Cwd, Autostart: a.Autostart,
 			Sandbox: a.Sandbox, SandboxRO: a.SandboxRO, SandboxRW: a.SandboxRW,
+			NetIsolate: a.NetIsolate, NetHostPorts: a.NetHostPorts,
 		})
 		if err != nil {
 			return sum, fmt.Errorf("'%s' ilovasi yuborilmadi: %w", a.Name, err)

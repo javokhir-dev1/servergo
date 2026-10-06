@@ -30,6 +30,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,22 +41,96 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // BinName — kerakli tashqi dastur.
 const BinName = "bwrap"
+
+// NoFD — Argv'ga "bu deskriptor berilmaydi" deb aytish uchun. Nol emas,
+// chunki 0 (stdin) haqiqiy deskriptor: seccomp filtri aynan stdin orqali
+// beriladi — tarmoq izolyatsiyasida pasta qo'shimcha deskriptorlarning
+// hammasini yopadi, stdin esa o'tadi.
+const NoFD = -1
 
 // Spec — bitta ilova uchun sandbox parametrlari.
 type Spec struct {
 	Cwd string   // loyiha papkasi — yozish huquqi bilan ko'rinadi (shart)
 	RO  []string // faqat o'qish uchun: monorepo node_modules, site-packages, .env...
 	RW  []string // yozish ham mumkin: yuklanmalar papkasi, tashqi baza fayli...
+	Net *NetSpec // nil — tarmoq hostniki (izolyatsiya yo'q)
 }
+
+// NetSpec — tarmoq izolyatsiyasi: ilovaga o'z tarmoq namespace'i beriladi.
+//
+// Nega kerak: mount va PID namespace fayl va jarayonlarni yopadi, lekin
+// localhost ochiq qolardi — buzilgan ilova 127.0.0.1:5432 ga ulanib qo'shni
+// loyihaning bazasini o'qiy olardi, ServerGo'ning o'z API'siga ham yetib
+// borardi. Izolyatsiya yoqilganda hostning localhost'i butunlay yopiladi va
+// faqat HostPorts ro'yxatidagi portlar ichkaridan ko'rinadi.
+//
+// Buni pasta (passt paketi) amalga oshiradi: u tarmoq namespace'ini yaratib,
+// ichida bwrap'ni ishga tushiradi, tashqi ulanishlarni NAT qilib o'tkazadi va
+// ilova tinglagan portlarni hostga qaytaradi.
+type NetSpec struct {
+	HostPorts  []int  // ichkaridan hostning shu TCP portlariga ruxsat (5432, 6379...)
+	ResolvConf string // /etc/resolv.conf o'rniga qo'yiladigan fayl (EnsureResolvConf)
+}
+
+// NetBinName — tarmoq izolyatsiyasi uchun kerakli dastur.
+const NetBinName = "pasta"
+
+// netDNSAddr — sandbox ichidagi nomlar serveri. Haqiqiy bo'lmagan manzil:
+// pasta shu manzilga kelgan 53-port trafigini hostning nomlar serveriga
+// uzatadi. Hostdagi /etc/resolv.conf 127.0.0.53 ni ko'rsatadi, lekin u
+// tarmoq namespace'i ichida hech kim tinglamaydi — shuning uchun ichkariga
+// o'z resolv.conf'imizni qo'yamiz.
+const netDNSAddr = "169.254.1.1"
 
 // Info — bwrap --info-fd orqali qaytaradigan ma'lumot.
 type Info struct {
 	ChildPID int    `json:"child-pid"`
 	PidNS    uint64 `json:"pid-namespace"`
+}
+
+// NetAvailable — tarmoq izolyatsiyasi uchun pasta bormi.
+//
+// Diqqat: Ubuntu'da kernel.apparmor_restrict_unprivileged_userns=1, ya'ni
+// user namespace yaratish uchun AppArmor profili kerak. pasta'ning profili
+// paket bilan /etc/apparmor.d/usr.bin.pasta ga o'rnatiladi va YO'LGA
+// bog'langan — shuning uchun binarni boshqa joydan ko'chirib ishlatib
+// bo'lmaydi, paket sifatida o'rnatilishi shart.
+func NetAvailable() error {
+	if _, err := exec.LookPath(NetBinName); err != nil {
+		return fmt.Errorf("%s o'rnatilmagan — `sudo apt install passt`", NetBinName)
+	}
+	return nil
+}
+
+// EnsureResolvConf — sandbox ichida ishlatiladigan resolv.conf faylini
+// yozadi (bir marta yetarli, mazmuni hamma ilova uchun bir xil).
+func EnsureResolvConf(dir string) (string, error) {
+	path := filepath.Join(dir, "net-resolv.conf")
+	want := []byte("# ServerGo sandbox: pasta nomlar serverini shu manzilda beradi\nnameserver " + netDNSAddr + "\n")
+	if cur, err := os.ReadFile(path); err == nil && bytes.Equal(cur, want) {
+		return path, nil
+	}
+	if err := os.WriteFile(path, want, 0o644); err != nil {
+		return "", fmt.Errorf("resolv.conf yozib bo'lmadi: %w", err)
+	}
+	return path, nil
+}
+
+// hostResolvConf — hostdagi /etc/resolv.conf oxir-oqibat qaysi faylga
+// ishora qiladi. Ubuntu'da bu /run/systemd/resolve/stub-resolv.conf ga
+// bog'lama; bwrap bog'lamaning o'zi ustiga mount qila olmaydi (/etc faqat
+// o'qish uchun ulangan), shuning uchun yakuniy manzilni almashtiramiz.
+func hostResolvConf() string {
+	const p = "/etc/resolv.conf"
+	if target, err := filepath.EvalSymlinks(p); err == nil {
+		return target
+	}
+	return p
 }
 
 // Available — bwrap o'rnatilganmi va bu tizimda ishlaydimi.
@@ -90,13 +165,23 @@ func Validate(sp Spec) error {
 			return err
 		}
 	}
+	if sp.Net != nil {
+		if err := NetAvailable(); err != nil {
+			return err
+		}
+		for _, port := range sp.Net.HostPorts {
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("port chegaradan tashqarida: %d", port)
+			}
+		}
+	}
 	return nil
 }
 
 // Argv — bwrap uchun to'liq argument ro'yxati (birinchi element — bwrap yo'li).
-// infoFD > 0 bo'lsa, bwrap o'sha deskriptorga Info JSON'ini yozadi.
-// seccompFD > 0 bo'lsa, bwrap o'sha deskriptordan cBPF filtrini o'qiydi
-// (qarang: SeccompProgram).
+// infoFD >= 0 bo'lsa, bwrap o'sha deskriptorga Info JSON'ini yozadi.
+// seccompFD >= 0 bo'lsa, bwrap o'sha deskriptordan cBPF filtrini o'qiydi
+// (qarang: SeccompProgram). Berilmasa NoFD yuboriladi.
 func Argv(sp Spec, command string, infoFD, seccompFD int) ([]string, error) {
 	path, err := exec.LookPath(BinName)
 	if err != nil {
@@ -108,7 +193,18 @@ func Argv(sp Spec, command string, infoFD, seccompFD int) ([]string, error) {
 	}
 	home := homeDir()
 
-	a := []string{
+	a := []string{}
+	if sp.Net != nil {
+		head, err := netArgv(sp.Net)
+		if err != nil {
+			return nil, err
+		}
+		// pasta tarmoq namespace'ini yaratib, ichida bwrap'ni ishga tushiradi:
+		// teskari tartib (bwrap --unshare-net + pasta --netns) ishlamaydi,
+		// chunki pasta bwrap yaratgan user namespace'ga kira olmaydi.
+		a = append(a, head...)
+	}
+	a = append(a,
 		path,
 		// ServerGo o'lsa sandbox ham o'ladi — yetim jarayon qolmaydi.
 		"--die-with-parent",
@@ -120,7 +216,7 @@ func Argv(sp Spec, command string, infoFD, seccompFD int) ([]string, error) {
 		"--tmpfs", "/tmp",
 		"--ro-bind", "/usr", "/usr",
 		"--ro-bind", "/etc", "/etc",
-	}
+	)
 
 	// Ubuntu'da /bin, /lib... — /usr ichiga simvolik bog'lama (merged-usr).
 	// Boshqa tizimda haqiqiy papka bo'lishi mumkin, shuning uchun tekshiramiz.
@@ -141,8 +237,17 @@ func Argv(sp Spec, command string, infoFD, seccompFD int) ([]string, error) {
 	// hostdagi /var ga tegmaydi.
 	a = append(a, "--tmpfs", "/var", "--symlink", "../run", "/var/run")
 
-	// DNS: /etc/resolv.conf Ubuntu'da /run/systemd/resolve ichiga bog'lama.
-	a = append(a, "--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve")
+	// DNS. Izolyatsiyasiz: /etc/resolv.conf Ubuntu'da /run/systemd/resolve
+	// ichiga bog'lama, shuning uchun o'sha papkani ham beramiz.
+	// Izolyatsiyada esa 127.0.0.53 ni ichkarida hech kim tinglamaydi —
+	// o'rniga pasta'ning manzilini ko'rsatadigan o'z faylimizni qo'yamiz.
+	// Tartib muhim: bu bind /run/systemd/resolve dan KEYIN bo'lishi kerak,
+	// aks holda papka bind'i faylimizni yopib qo'yadi.
+	if sp.Net == nil {
+		a = append(a, "--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve")
+	} else if sp.Net.ResolvConf != "" {
+		a = append(a, "--ro-bind", sp.Net.ResolvConf, hostResolvConf())
+	}
 	// Mahalliy baza soketlari (TCP ishlatilsa ham, ro'yxat ziyon qilmaydi).
 	for _, p := range []string{"/run/postgresql", "/run/mysqld", "/run/redis"} {
 		a = append(a, "--bind-try", p, p)
@@ -183,10 +288,10 @@ func Argv(sp Spec, command string, infoFD, seccompFD int) ([]string, error) {
 	}
 	a = append(a, "--bind", cwd, cwd, "--chdir", cwd)
 
-	if infoFD > 0 {
+	if infoFD >= 0 {
 		a = append(a, "--info-fd", strconv.Itoa(infoFD))
 	}
-	if seccompFD > 0 {
+	if seccompFD >= 0 {
 		a = append(a, "--seccomp", strconv.Itoa(seccompFD))
 	}
 	return append(a, "--", "/bin/sh", "-c", command), nil
@@ -291,4 +396,131 @@ func checkExtra(raw, home string) (string, error) {
 		}
 	}
 	return p, nil
+}
+
+// netArgv — pasta argumentlari. Ro'yxat ataylab "hamma narsa yopiq, faqat
+// kerakligi ochiq" tartibida:
+//
+//	-t auto              ilova ichkarida tinglagan portlar hostga qaytariladi
+//	                     (tunnel 127.0.0.1:PORT ga ulanadi) — ro'yxat
+//	                     dinamik, ilovaning portini qo'lda yozish shart emas
+//	--host-lo-to-ns-lo   hostning loopback'idan kelgan ulanish ichkarida ham
+//	                     loopback bo'lib ko'rinadi (ilovalar 127.0.0.1 ni
+//	                     tinglaydi, shuning uchun shart)
+//	-T <portlar>         ichkaridan hostning localhost'iga ruxsat — FAQAT
+//	                     ko'rsatilgan portlar (pasta'ning standarti "auto",
+//	                     ya'ni hamma port ochiq bo'lardi)
+//	-u/-U none           UDP ikki tomonga yopiq (DNS --dns-forward orqali)
+//	--map-host-loopback none
+//	                     hostga to'g'ridan-to'g'ri chiqish yo'li yopiq
+//	--dns-forward        ichkaridagi 169.254.1.1 -> hostning nomlar serveri
+func netArgv(ns *NetSpec) ([]string, error) {
+	path, err := exec.LookPath(NetBinName)
+	if err != nil {
+		return nil, fmt.Errorf("%s o'rnatilmagan — `sudo apt install passt`", NetBinName)
+	}
+	ports := "none"
+	if len(ns.HostPorts) > 0 {
+		list := make([]string, 0, len(ns.HostPorts))
+		for _, p := range ns.HostPorts {
+			if p < 1 || p > 65535 {
+				return nil, fmt.Errorf("port chegaradan tashqarida: %d", p)
+			}
+			list = append(list, strconv.Itoa(p))
+		}
+		ports = strings.Join(list, ",")
+	}
+	return []string{
+		path,
+		"--config-net",
+		"-f", // fon rejimiga o'tmasin: jarayonni ServerGo boshqaradi
+		"-q",
+		"-t", "auto",
+		"--host-lo-to-ns-lo",
+		"-T", ports,
+		"-u", "none",
+		"-U", "none",
+		"--map-host-loopback", "none",
+		"--dns-forward", netDNSAddr,
+		"--",
+	}, nil
+}
+
+// FindNS — jarayon daraxtidan sandbox'ning PID namespace'ini topadi.
+//
+// Tarmoq izolyatsiyasida zanjir pasta -> bwrap -> init bo'ladi, pasta esa
+// qo'shimcha deskriptorlarni yopadi — ya'ni bwrap'ning --info-fd'i bizga
+// yetib kelmaydi. Shuning uchun avlodlarni kezib, PID namespace'ni o'zimiz
+// topamiz.
+//
+// Diqqat: pasta ham o'z PID namespace'ini yaratadi (buyruq uning ichida
+// PID 1 bo'lib ishga tushadi), bwrap esa uning ichida yana bittasini. Bizga
+// ENG ICHKARIDAGISI kerak — ilovaning o'zi shunda. Birinchi uchragan
+// namespace (pasta'ningi) olinsa, SIGTERM ilovaga emas, bwrap'ning tashqi
+// jarayoniga borib, yumshoq to'xtatish ishlamay qolardi.
+func FindNS(rootPID int, wait time.Duration) (Info, error) {
+	selfNS, err := nsInode(rootPID)
+	if err != nil {
+		return Info{}, err
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		if info, depth := deepestNS(rootPID, selfNS, 0); depth > 0 {
+			return info, nil
+		}
+		if time.Now().After(deadline) {
+			return Info{}, errors.New("sandbox PID namespace'i topilmadi")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// deepestNS — eng ko'p namespace o'tishi orqasida turgan jarayonni qaytaradi.
+// O'tish sodir bo'lgan jarayon — o'sha namespace'ning init'i (ichkarida PID 1).
+func deepestNS(pid int, parentNS uint64, depth int) (Info, int) {
+	best, bestDepth := Info{}, 0
+	for _, child := range childrenOf(pid) {
+		ns, err := nsInode(child)
+		if err != nil {
+			continue
+		}
+		d := depth
+		cand := best
+		candDepth := bestDepth
+		if ns != parentNS {
+			d++
+			if d > candDepth {
+				cand, candDepth = Info{ChildPID: child, PidNS: ns}, d
+			}
+		}
+		if sub, subDepth := deepestNS(child, ns, d); subDepth > candDepth {
+			cand, candDepth = sub, subDepth
+		}
+		if candDepth > bestDepth {
+			best, bestDepth = cand, candDepth
+		}
+	}
+	return best, bestDepth
+}
+
+func childrenOf(pid int) []int {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", pid, pid))
+	if err != nil {
+		return nil
+	}
+	out := []int{}
+	for _, f := range strings.Fields(string(data)) {
+		if n, err := strconv.Atoi(f); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func nsInode(pid int) (uint64, error) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(fmt.Sprintf("/proc/%d/ns/pid", pid), &st); err != nil {
+		return 0, err
+	}
+	return st.Ino, nil
 }

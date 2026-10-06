@@ -164,19 +164,32 @@ type AppInput struct {
 	SandboxRO []string `json:"sandboxRo"`
 	// SandboxRW — yozish ham mumkin bo'lgan qo'shimcha yo'llar.
 	SandboxRW []string `json:"sandboxRw"`
+	// NetIsolate — alohida tarmoq namespace (hostning localhost'i yopiladi).
+	NetIsolate bool `json:"netIsolate"`
+	// NetHostPorts — izolyatsiyada ichkaridan ko'rinadigan host portlari.
+	NetHostPorts []int `json:"netHostPorts"`
 }
 
-// SandboxStatus — UI/CLI uchun: bu tizimda sandbox ishlaydimi.
+// SandboxStatus — UI/CLI uchun: bu tizimda sandbox va tarmoq izolyatsiyasi
+// ishlaydimi (ikkinchisi alohida paketga — passt'ga tayanadi).
 type SandboxStatus struct {
-	Available bool   `json:"available"`
-	Reason    string `json:"reason"`
+	Available    bool   `json:"available"`
+	Reason       string `json:"reason"`
+	NetAvailable bool   `json:"netAvailable"`
+	NetReason    string `json:"netReason"`
 }
 
 func (s *Service) SandboxStatus() SandboxStatus {
+	out := SandboxStatus{Available: true}
 	if err := sandbox.Available(); err != nil {
-		return SandboxStatus{Available: false, Reason: err.Error()}
+		out.Available, out.Reason = false, err.Error()
 	}
-	return SandboxStatus{Available: true}
+	if err := sandbox.NetAvailable(); err != nil {
+		out.NetReason = err.Error()
+	} else {
+		out.NetAvailable = true
+	}
+	return out
 }
 
 // cleanPaths — bo'sh qatorlarni va bo'shliqlarni tozalaydi.
@@ -216,12 +229,20 @@ func (s *Service) validate(in *AppInput, excludeID string, checkPaths bool) erro
 			if err := sandbox.Available(); err != nil {
 				return errors.New("sandbox ishlamaydi: " + err.Error())
 			}
-			if err := sandbox.Validate(sandbox.Spec{Cwd: in.Cwd, RO: in.SandboxRO, RW: in.SandboxRW}); err != nil {
+			spec := sandbox.Spec{Cwd: in.Cwd, RO: in.SandboxRO, RW: in.SandboxRW}
+			if in.NetIsolate {
+				spec.Net = &sandbox.NetSpec{HostPorts: in.NetHostPorts}
+			}
+			if err := sandbox.Validate(spec); err != nil {
 				return err
 			}
 		}
 	} else if len(in.SandboxRW) > 0 || len(in.SandboxRO) > 0 {
 		return errors.New("qo'shimcha yo'llar faqat sandbox yoqilganda ma'noga ega")
+	} else if in.NetIsolate {
+		// Tarmoq izolyatsiyasi sandbox'ning bir qismi: alohida tarmoq
+		// namespace'i bwrap yaratgan muhit ichida beriladi.
+		return errors.New("tarmoq izolyatsiyasi uchun sandbox yoqilishi shart")
 	}
 	taken, err := s.st.NameTaken(in.Name, excludeID)
 	if err != nil {
@@ -241,16 +262,18 @@ func (s *Service) CreateApp(in AppInput) (*AppView, error) {
 		return nil, err
 	}
 	a := store.App{
-		ID:        uuid.NewString(),
-		Name:      in.Name,
-		Command:   in.Command,
-		Cwd:       in.Cwd,
-		Autostart: in.Autostart,
-		Sandbox:   in.Sandbox,
-		SandboxRO: in.SandboxRO,
-		SandboxRW: in.SandboxRW,
-		Status:    "stopped",
-		CreatedAt: time.Now(),
+		ID:           uuid.NewString(),
+		Name:         in.Name,
+		Command:      in.Command,
+		Cwd:          in.Cwd,
+		Autostart:    in.Autostart,
+		Sandbox:      in.Sandbox,
+		SandboxRO:    in.SandboxRO,
+		SandboxRW:    in.SandboxRW,
+		NetIsolate:   in.NetIsolate,
+		NetHostPorts: in.NetHostPorts,
+		Status:       "stopped",
+		CreatedAt:    time.Now(),
 	}
 	if err := s.st.SaveApp(a); err != nil {
 		return nil, err
@@ -270,16 +293,18 @@ func (s *Service) ImportApp(id string, in AppInput) (*AppView, error) {
 		return nil, err
 	}
 	a := store.App{
-		ID:        id,
-		Name:      in.Name,
-		Command:   in.Command,
-		Cwd:       in.Cwd,
-		Autostart: in.Autostart,
-		Sandbox:   in.Sandbox,
-		SandboxRO: in.SandboxRO,
-		SandboxRW: in.SandboxRW,
-		Status:    "stopped",
-		CreatedAt: time.Now(),
+		ID:           id,
+		Name:         in.Name,
+		Command:      in.Command,
+		Cwd:          in.Cwd,
+		Autostart:    in.Autostart,
+		Sandbox:      in.Sandbox,
+		SandboxRO:    in.SandboxRO,
+		SandboxRW:    in.SandboxRW,
+		NetIsolate:   in.NetIsolate,
+		NetHostPorts: in.NetHostPorts,
+		Status:       "stopped",
+		CreatedAt:    time.Now(),
 	}
 	if err := s.st.SaveApp(a); err != nil {
 		return nil, err
@@ -304,6 +329,7 @@ func (s *Service) UpdateApp(id string, in AppInput) (*AppView, error) {
 	}
 	a.Name, a.Command, a.Cwd, a.Autostart = in.Name, in.Command, in.Cwd, in.Autostart
 	a.Sandbox, a.SandboxRO, a.SandboxRW = in.Sandbox, in.SandboxRO, in.SandboxRW
+	a.NetIsolate, a.NetHostPorts = in.NetIsolate, in.NetHostPorts
 	if err := s.st.SaveApp(a); err != nil {
 		return nil, err
 	}

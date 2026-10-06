@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,12 +27,9 @@ const (
 	aliveGrace   = 1500 * time.Millisecond // shuncha vaqt tirik qolsa "running" deb hisoblanadi
 	maxRingLines = 500
 	maxLogFileMB = 10
-	// sandboxInfoFD — bwrap sandbox ma'lumotini (init PID, PID namespace)
-	// shu deskriptorga yozadi; cmd.ExtraFiles[0] bolada aynan fd 3 bo'ladi.
+	// sandboxInfoFD — cmd.ExtraFiles[0] bolada aynan shu raqam bo'ladi;
+	// bwrap sandbox ma'lumotini (init PID, PID namespace) shunga yozadi.
 	sandboxInfoFD = 3
-	// sandboxSeccompFD — seccomp filtri shu deskriptordan o'qiladi
-	// (cmd.ExtraFiles[1] = fd 4).
-	sandboxSeccompFD = 4
 )
 
 // EmitFunc — UI'ga hodisa yuborish (tunnel.Service.emit bilan bir xil shakl).
@@ -142,42 +140,72 @@ func (m *Manager) spawn(a store.App, restarts int) error {
 			m.setStatus(a.ID, "error", "sandbox: "+err.Error())
 			return err
 		}
-		// Seccomp filtri: qochib chiqish uchun ishlatiladigan tizim
-		// chaqiruvlarini kesadi. Arxitektura qo'llanmasa nil keladi —
-		// sandbox filtrsiz, qolgan himoyalari bilan ishlayveradi.
-		seccompFD := 0
-		if prog := sandbox.SeccompProgram(); len(prog) > 0 {
-			sr, sw, perr := os.Pipe()
-			if perr != nil {
-				return perr
+
+		spec := sandbox.Spec{Cwd: cwd, RO: a.SandboxRO, RW: a.SandboxRW}
+		// Tarmoq izolyatsiyasida zanjir pasta -> bwrap bo'ladi, pasta esa
+		// qo'shimcha deskriptorlarni yopadi: bwrap'ning --info-fd'i bizga
+		// yetib kelmaydi, shuning uchun namespace'ni keyin jarayon
+		// daraxtidan topamiz (FindNS).
+		useInfoFD := true
+		if a.NetIsolate {
+			if err := sandbox.NetAvailable(); err != nil {
+				m.setStatus(a.ID, "error", "tarmoq izolyatsiyasi: "+err.Error())
+				return err
 			}
-			// Filtr bir necha yuz bayt — quvur buferiga sig'adi, shuning
-			// uchun yozib, yozuv uchini darhol yopamiz (bwrap EOF gacha o'qiydi).
-			if _, werr := sw.Write(prog); werr != nil {
-				closeFiles(sr, sw)
-				return werr
+			resolv, err := sandbox.EnsureResolvConf(store.Dir())
+			if err != nil {
+				m.setStatus(a.ID, "error", "tarmoq izolyatsiyasi: "+err.Error())
+				return err
 			}
-			sw.Close()
-			seccompR, seccompFD = sr, sandboxSeccompFD
+			spec.Net = &sandbox.NetSpec{HostPorts: a.NetHostPorts, ResolvConf: resolv}
+			useInfoFD = false
 		}
 
-		argv, err := sandbox.Argv(sandbox.Spec{Cwd: cwd, RO: a.SandboxRO, RW: a.SandboxRW},
-			a.Command, sandboxInfoFD, seccompFD)
+		// Info deskriptori faqat tarmoq izolyatsiyasisiz ishlaydi
+		// (ExtraFiles[0] bolada fd 3 bo'ladi).
+		infoFD := sandbox.NoFD
+		if useInfoFD {
+			r, w, err := os.Pipe()
+			if err != nil {
+				return err
+			}
+			infoR, infoW = r, w
+			infoFD = sandboxInfoFD
+		}
+		// Seccomp filtri STDIN orqali beriladi: pasta qo'shimcha
+		// deskriptorlarning hammasini yopadi, stdin esa o'tadi. bwrap
+		// filtrni o'qib bo'lgach, shu deskriptor ilovaning stdin'i bo'lib
+		// qoladi (bo'shagan quvur — ilovalar uchun /dev/null bilan bir xil).
+		seccompFD := sandbox.NoFD
+		if prog := sandbox.SeccompProgram(); len(prog) > 0 {
+			sr, sw, err := os.Pipe()
+			if err != nil {
+				closeFiles(infoR, infoW)
+				return err
+			}
+			// Filtr bir necha yuz bayt — quvur buferiga sig'adi, shuning
+			// uchun yozib, yozuv uchini darhol yopamiz.
+			if _, err := sw.Write(prog); err != nil {
+				closeFiles(infoR, infoW, sr, sw)
+				return err
+			}
+			sw.Close()
+			seccompR = sr
+			seccompFD = 0
+		}
+
+		argv, err := sandbox.Argv(spec, a.Command, infoFD, seccompFD)
 		if err != nil {
-			closeFiles(seccompR)
+			closeFiles(infoR, infoW, seccompR)
 			m.setStatus(a.ID, "error", "sandbox: "+err.Error())
 			return err
 		}
-		r, w, perr := os.Pipe()
-		if perr != nil {
-			closeFiles(seccompR)
-			return perr
-		}
-		infoR, infoW = r, w
 		cmd = exec.Command(argv[0], argv[1:]...)
-		cmd.ExtraFiles = []*os.File{infoW} // fd 3
+		if infoW != nil {
+			cmd.ExtraFiles = []*os.File{infoW} // fd 3
+		}
 		if seccompR != nil {
-			cmd.ExtraFiles = append(cmd.ExtraFiles, seccompR) // fd 4
+			cmd.Stdin = seccompR
 		}
 	}
 	cmd.Dir = cwd
@@ -216,20 +244,33 @@ func (m *Manager) spawn(a store.App, restarts int) error {
 	// Bolaga uzatilgandan keyin ota tomondagi nusxalar kerak emas.
 	closeFiles(seccompR)
 
-	if infoW != nil {
-		// Yozuv uchi faqat bwrap'da qolishi kerak, aks holda o'qish EOF
-		// kutib qotib qolardi.
-		infoW.Close()
-		_ = infoR.SetReadDeadline(time.Now().Add(3 * time.Second))
-		if in, err := sandbox.ParseInfo(infoR); err == nil {
+	if a.Sandbox {
+		var in sandbox.Info
+		var err error
+		if infoW != nil {
+			// Yozuv uchi faqat bwrap'da qolishi kerak, aks holda o'qish EOF
+			// kutib qotib qolardi.
+			infoW.Close()
+			_ = infoR.SetReadDeadline(time.Now().Add(3 * time.Second))
+			in, err = sandbox.ParseInfo(infoR)
+			infoR.Close()
+		} else {
+			// Tarmoq izolyatsiyasi: pasta deskriptorni yopgani uchun
+			// namespace'ni jarayon daraxtidan topamiz.
+			in, err = sandbox.FindNS(cmd.Process.Pid, 5*time.Second)
+		}
+		if err == nil {
 			pr.nsInode, pr.initPID = in.PidNS, in.ChildPID
-			appendLog(m, pr, a.ID, "[ServerGo] sandbox ichida ishga tushdi — uy papkasi yopiq, faqat "+cwd+" ko'rinadi")
+			line := "[ServerGo] sandbox ichida ishga tushdi — uy papkasi yopiq, faqat " + cwd + " ko'rinadi"
+			if a.NetIsolate {
+				line += "; tarmoq alohida (" + hostPortsNote(a.NetHostPorts) + ")"
+			}
+			appendLog(m, pr, a.ID, line)
 		} else {
 			// Ilova ishlayveradi, lekin to'xtatish "qattiq" bo'ladi
 			// (SIGTERM ichkariga yetmaydi) — shuni yozib qo'yamiz.
-			log.Printf("[apps][%s] sandbox ma'lumotini o'qib bo'lmadi: %v", short(a.ID), err)
+			log.Printf("[apps][%s] sandbox namespace'i aniqlanmadi: %v", short(a.ID), err)
 		}
-		infoR.Close()
 	}
 
 	m.mu.Lock()
@@ -413,4 +454,16 @@ func appendLog(m *Manager, pr *proc, id, line string) {
 		fmt.Fprintln(pr.logFile, line)
 	}
 	m.emit("app_log", map[string]string{"id": id, "line": line})
+}
+
+// hostPortsNote — log satri uchun: ichkaridan ko'rinadigan host portlari.
+func hostPortsNote(ports []int) string {
+	if len(ports) == 0 {
+		return "hostning localhost'i butunlay yopiq"
+	}
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		parts = append(parts, strconv.Itoa(p))
+	}
+	return "hostdan faqat " + strings.Join(parts, ", ") + " portlari ko'rinadi"
 }

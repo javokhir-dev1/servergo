@@ -476,6 +476,16 @@
             <span>Qo'shimcha yo'llar — yozish ham mumkin (ixtiyoriy)</span>
             <textarea id="af-rw" class="search" rows="2" placeholder="/home/server/yuklanmalar"></textarea>
           </label>
+          <label class="auto" id="af-net-row" hidden><input type="checkbox" id="af-net" /><span>Tarmoqni ham izolyatsiya qilish</span></label>
+          <div class="form-hint" id="af-net-hint" hidden>
+            Ilovaga alohida tarmoq beriladi: internet va o'z porti ishlayveradi,
+            lekin hostning <code>localhost</code>i yopiladi — qo'shni
+            loyihalarning bazasi, API'lari va ServerGo'ning o'zi ko'rinmaydi.
+          </div>
+          <label class="field" id="af-net-ports-field" hidden>
+            <span>Ochiq qoladigan host portlari (vergul bilan: 5432, 6379)</span>
+            <input type="text" id="af-net-ports" class="search" placeholder="5432, 6379" />
+          </label>
           <div class="form-note" id="af-note" hidden></div>
         </div>
         <div class="modal-actions">

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,10 +30,16 @@ type App struct {
 	// monorepo ildizidagi node_modules, python site-packages, umumiy .env...
 	SandboxRO []string `json:"sandboxRo"`
 	// SandboxRW — yozish ham mumkin bo'lgan qo'shimcha yo'llar.
-	SandboxRW []string  `json:"sandboxRw"`
-	Status    string    `json:"status"` // stopped | starting | running | error
-	LastError string    `json:"lastError"`
-	CreatedAt time.Time `json:"createdAt"`
+	SandboxRW []string `json:"sandboxRw"`
+	// NetIsolate — ilovaga alohida tarmoq namespace: hostning localhost'i
+	// yopiladi (qo'shni loyihalarning bazasi va API'lari ko'rinmaydi).
+	NetIsolate bool `json:"netIsolate"`
+	// NetHostPorts — izolyatsiya yoqilganda ichkaridan ko'rinadigan
+	// hostning localhost portlari (masalan 5432 postgres, 6379 redis).
+	NetHostPorts []int     `json:"netHostPorts"`
+	Status       string    `json:"status"` // stopped | starting | running | error
+	LastError    string    `json:"lastError"`
+	CreatedAt    time.Time `json:"createdAt"`
 }
 
 // Dir — ~/.config/servergo/apps
@@ -84,6 +91,8 @@ CREATE TABLE IF NOT EXISTS apps (
   sandbox     INTEGER NOT NULL DEFAULT 0,
   sandbox_rw  TEXT NOT NULL DEFAULT '',
   sandbox_ro  TEXT NOT NULL DEFAULT '',
+  net_isolate INTEGER NOT NULL DEFAULT 0,
+  net_ports   TEXT NOT NULL DEFAULT '',
   last_error  TEXT NOT NULL DEFAULT '',
   created_at  TEXT NOT NULL
 );`)
@@ -95,6 +104,8 @@ CREATE TABLE IF NOT EXISTS apps (
 		`sandbox INTEGER NOT NULL DEFAULT 0`,
 		`sandbox_rw TEXT NOT NULL DEFAULT ''`,
 		`sandbox_ro TEXT NOT NULL DEFAULT ''`,
+		`net_isolate INTEGER NOT NULL DEFAULT 0`,
+		`net_ports TEXT NOT NULL DEFAULT ''`,
 	} {
 		if err := s.ensureColumn(c); err != nil {
 			return err
@@ -113,13 +124,14 @@ func (s *Store) ensureColumn(def string) error {
 	return err
 }
 
-const appCols = `id, name, command, cwd, status, autostart, sandbox, sandbox_rw, sandbox_ro, last_error, created_at`
+const appCols = `id, name, command, cwd, status, autostart, sandbox, sandbox_rw, sandbox_ro, net_isolate, net_ports, last_error, created_at`
 
 func scanApp(row interface{ Scan(...any) error }) (App, error) {
 	var a App
-	var auto, sb int
-	var rw, ro, created string
-	err := row.Scan(&a.ID, &a.Name, &a.Command, &a.Cwd, &a.Status, &auto, &sb, &rw, &ro, &a.LastError, &created)
+	var auto, sb, netIso int
+	var rw, ro, ports, created string
+	err := row.Scan(&a.ID, &a.Name, &a.Command, &a.Cwd, &a.Status, &auto, &sb, &rw, &ro,
+		&netIso, &ports, &a.LastError, &created)
 	if err != nil {
 		return a, err
 	}
@@ -127,6 +139,8 @@ func scanApp(row interface{ Scan(...any) error }) (App, error) {
 	a.Sandbox = sb == 1
 	a.SandboxRW = splitPaths(rw)
 	a.SandboxRO = splitPaths(ro)
+	a.NetIsolate = netIso == 1
+	a.NetHostPorts = splitPorts(ports)
 	a.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	return a, nil
 }
@@ -169,19 +183,24 @@ func (s *Store) SaveApp(a App) error {
 	if a.Sandbox {
 		sb = 1
 	}
+	netIso := 0
+	if a.NetIsolate {
+		netIso = 1
+	}
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = time.Now()
 	}
 	_, err := s.db.Exec(`
-INSERT INTO apps (`+appCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+INSERT INTO apps (`+appCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   name=excluded.name, command=excluded.command, cwd=excluded.cwd,
   status=excluded.status, autostart=excluded.autostart,
   sandbox=excluded.sandbox, sandbox_rw=excluded.sandbox_rw,
   sandbox_ro=excluded.sandbox_ro,
+  net_isolate=excluded.net_isolate, net_ports=excluded.net_ports,
   last_error=excluded.last_error`,
 		a.ID, a.Name, a.Command, a.Cwd, a.Status, auto, sb,
-		joinPaths(a.SandboxRW), joinPaths(a.SandboxRO), a.LastError,
+		joinPaths(a.SandboxRW), joinPaths(a.SandboxRO), netIso, joinPorts(a.NetHostPorts), a.LastError,
 		a.CreatedAt.Format(time.RFC3339))
 	return err
 }
@@ -223,4 +242,25 @@ func joinPaths(list []string) string {
 		}
 	}
 	return strings.Join(clean, "\n")
+}
+
+// splitPorts / joinPorts — tarmoq portlari vergul bilan saqlanadi.
+func splitPorts(v string) []int {
+	out := []int{}
+	for _, f := range strings.Split(v, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n > 0 {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func joinPorts(list []int) string {
+	parts := make([]string, 0, len(list))
+	for _, n := range list {
+		if n > 0 {
+			parts = append(parts, strconv.Itoa(n))
+		}
+	}
+	return strings.Join(parts, ",")
 }
