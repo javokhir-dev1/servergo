@@ -13,7 +13,7 @@ import (
 // argvString — tekshirishni osonlashtirish uchun argumentlarni bitta qatorga.
 func argvString(t *testing.T, sp Spec) string {
 	t.Helper()
-	argv, err := Argv(sp, "true", 0)
+	argv, err := Argv(sp, "true", 0, 0)
 	if err != nil {
 		t.Fatalf("Argv: %v", err)
 	}
@@ -51,13 +51,13 @@ func TestArgvSealsHome(t *testing.T) {
 }
 
 func TestArgvRequiresCwd(t *testing.T) {
-	if _, err := Argv(Spec{}, "true", 0); err == nil {
+	if _, err := Argv(Spec{}, "true", 0, 0); err == nil {
 		t.Fatal("ishchi papkasiz sandbox yaratildi")
 	}
-	if _, err := Argv(Spec{Cwd: "nisbiy/yo'l"}, "true", 0); err == nil {
+	if _, err := Argv(Spec{Cwd: "nisbiy/yo'l"}, "true", 0, 0); err == nil {
 		t.Fatal("nisbiy yo'l qabul qilindi")
 	}
-	if _, err := Argv(Spec{Cwd: filepath.Join(t.TempDir(), "yo'q")}, "true", 0); err == nil {
+	if _, err := Argv(Spec{Cwd: filepath.Join(t.TempDir(), "yo'q")}, "true", 0, 0); err == nil {
 		t.Fatal("mavjud bo'lmagan papka qabul qilindi")
 	}
 }
@@ -105,7 +105,7 @@ func TestSandboxHidesSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	argv, err := Argv(Spec{Cwd: cwd}, "cat ochiq.txt; cat "+secret+" 2>&1", 0)
+	argv, err := Argv(Spec{Cwd: cwd}, "cat ochiq.txt; cat "+secret+" 2>&1", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestReadOnlyParentKeepsCwdWritable(t *testing.T) {
 	argv, err := Argv(Spec{Cwd: cwd, RO: []string{root}},
 		"cat "+filepath.Join(root, "umumiy.txt")+
 			"; echo yangi > ./ichki.txt && echo CWD-YOZILDI"+
-			"; echo buzdim > "+filepath.Join(root, "umumiy.txt")+" 2>/dev/null && echo RO-TESHIK", 0)
+			"; echo buzdim > "+filepath.Join(root, "umumiy.txt")+" 2>/dev/null && echo RO-TESHIK", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,5 +168,49 @@ func TestExtraPathAcceptsFile(t *testing.T) {
 	}
 	if err := Validate(Spec{Cwd: dir, RO: []string{f}}); err != nil {
 		t.Errorf("fayl qo'shimcha yo'l sifatida rad etildi: %v", err)
+	}
+}
+
+// TestSeccompBlocksEscapeSyscalls — filtr haqiqatan qo'llanadimi: sandbox
+// ichida `unshare` yangi namespace ocholmasligi kerak (bu kernel'dan qochib
+// chiqishning eng ko'p ishlatiladigan yo'li), oddiy ishlar esa ishlashi kerak.
+func TestSeccompBlocksEscapeSyscalls(t *testing.T) {
+	if err := Available(); err != nil {
+		t.Skipf("bwrap ishlamaydi: %v", err)
+	}
+	prog := SeccompProgram()
+	if len(prog) == 0 {
+		t.Skip("bu arxitektura uchun seccomp filtri yo'q")
+	}
+	if len(prog)%8 != 0 {
+		t.Fatalf("filtr uzunligi 8 ga bo'linmadi: %d", len(prog))
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(prog); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	defer r.Close()
+
+	cwd := t.TempDir()
+	argv, err := Argv(Spec{Cwd: cwd},
+		"echo ODDIY-ISH-OK; unshare --mount /bin/true 2>&1 && echo UNSHARE-OTDI", 0, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.ExtraFiles = []*os.File{r} // bolada fd 3
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+
+	if !strings.Contains(got, "ODDIY-ISH-OK") {
+		t.Fatalf("filtr oddiy ishni ham to'sdi: %s", got)
+	}
+	if strings.Contains(got, "UNSHARE-OTDI") {
+		t.Errorf("unshare() to'silmadi — seccomp qo'llanmagan: %s", got)
 	}
 }

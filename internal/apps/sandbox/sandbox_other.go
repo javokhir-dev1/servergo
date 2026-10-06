@@ -29,7 +29,9 @@ func Available() error { return errUnsupported }
 
 func Validate(sp Spec) error { return errUnsupported }
 
-func Argv(sp Spec, command string, infoFD int) ([]string, error) { return nil, errUnsupported }
+func Argv(sp Spec, command string, infoFD, seccompFD int) ([]string, error) {
+	return nil, errUnsupported
+}
 
 func ParseInfo(r io.Reader) (Info, error) {
 	var in Info

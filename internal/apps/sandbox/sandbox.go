@@ -95,7 +95,9 @@ func Validate(sp Spec) error {
 
 // Argv — bwrap uchun to'liq argument ro'yxati (birinchi element — bwrap yo'li).
 // infoFD > 0 bo'lsa, bwrap o'sha deskriptorga Info JSON'ini yozadi.
-func Argv(sp Spec, command string, infoFD int) ([]string, error) {
+// seccompFD > 0 bo'lsa, bwrap o'sha deskriptordan cBPF filtrini o'qiydi
+// (qarang: SeccompProgram).
+func Argv(sp Spec, command string, infoFD, seccompFD int) ([]string, error) {
 	path, err := exec.LookPath(BinName)
 	if err != nil {
 		return nil, fmt.Errorf("%s o'rnatilmagan — `sudo apt install bubblewrap`", BinName)
@@ -183,6 +185,9 @@ func Argv(sp Spec, command string, infoFD int) ([]string, error) {
 
 	if infoFD > 0 {
 		a = append(a, "--info-fd", strconv.Itoa(infoFD))
+	}
+	if seccompFD > 0 {
+		a = append(a, "--seccomp", strconv.Itoa(seccompFD))
 	}
 	return append(a, "--", "/bin/sh", "-c", command), nil
 }

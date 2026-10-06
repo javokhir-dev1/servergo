@@ -29,6 +29,9 @@ const (
 	// sandboxInfoFD — bwrap sandbox ma'lumotini (init PID, PID namespace)
 	// shu deskriptorga yozadi; cmd.ExtraFiles[0] bolada aynan fd 3 bo'ladi.
 	sandboxInfoFD = 3
+	// sandboxSeccompFD — seccomp filtri shu deskriptordan o'qiladi
+	// (cmd.ExtraFiles[1] = fd 4).
+	sandboxSeccompFD = 4
 )
 
 // EmitFunc — UI'ga hodisa yuborish (tunnel.Service.emit bilan bir xil shakl).
@@ -126,7 +129,7 @@ func (m *Manager) spawn(a store.App, restarts int) error {
 	}
 
 	cmd := exec.Command("sh", "-c", a.Command)
-	var infoR, infoW *os.File
+	var infoR, infoW, seccompR *os.File
 	if a.Sandbox {
 		// Ishchi papka ko'rsatilmasa cwd uy papkasiga tushadi — sandbox
 		// uy papkasini yopishga qurilgan, demak bunda ma'nosi qolmaydi.
@@ -139,18 +142,43 @@ func (m *Manager) spawn(a store.App, restarts int) error {
 			m.setStatus(a.ID, "error", "sandbox: "+err.Error())
 			return err
 		}
-		argv, err := sandbox.Argv(sandbox.Spec{Cwd: cwd, RO: a.SandboxRO, RW: a.SandboxRW}, a.Command, sandboxInfoFD)
+		// Seccomp filtri: qochib chiqish uchun ishlatiladigan tizim
+		// chaqiruvlarini kesadi. Arxitektura qo'llanmasa nil keladi —
+		// sandbox filtrsiz, qolgan himoyalari bilan ishlayveradi.
+		seccompFD := 0
+		if prog := sandbox.SeccompProgram(); len(prog) > 0 {
+			sr, sw, perr := os.Pipe()
+			if perr != nil {
+				return perr
+			}
+			// Filtr bir necha yuz bayt — quvur buferiga sig'adi, shuning
+			// uchun yozib, yozuv uchini darhol yopamiz (bwrap EOF gacha o'qiydi).
+			if _, werr := sw.Write(prog); werr != nil {
+				closeFiles(sr, sw)
+				return werr
+			}
+			sw.Close()
+			seccompR, seccompFD = sr, sandboxSeccompFD
+		}
+
+		argv, err := sandbox.Argv(sandbox.Spec{Cwd: cwd, RO: a.SandboxRO, RW: a.SandboxRW},
+			a.Command, sandboxInfoFD, seccompFD)
 		if err != nil {
+			closeFiles(seccompR)
 			m.setStatus(a.ID, "error", "sandbox: "+err.Error())
 			return err
 		}
 		r, w, perr := os.Pipe()
 		if perr != nil {
+			closeFiles(seccompR)
 			return perr
 		}
 		infoR, infoW = r, w
 		cmd = exec.Command(argv[0], argv[1:]...)
-		cmd.ExtraFiles = []*os.File{infoW}
+		cmd.ExtraFiles = []*os.File{infoW} // fd 3
+		if seccompR != nil {
+			cmd.ExtraFiles = append(cmd.ExtraFiles, seccompR) // fd 4
+		}
 	}
 	cmd.Dir = cwd
 	setupProcAttr(cmd)
@@ -181,10 +209,12 @@ func (m *Manager) spawn(a store.App, restarts int) error {
 		if lf != nil {
 			lf.Close()
 		}
-		closeFiles(infoR, infoW)
+		closeFiles(infoR, infoW, seccompR)
 		m.setStatus(a.ID, "error", "ishga tushmadi: "+err.Error())
 		return err
 	}
+	// Bolaga uzatilgandan keyin ota tomondagi nusxalar kerak emas.
+	closeFiles(seccompR)
 
 	if infoW != nil {
 		// Yozuv uchi faqat bwrap'da qolishi kerak, aks holda o'qish EOF

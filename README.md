@@ -62,6 +62,13 @@ kerak emas):
   bo'lishi mumkin. Read-only yo'l ishchi papkadan kattaroq bo'lsa ham ishchi
   papka yoziladigan bo'lib qoladi. Himoyani bekor qiladigan yo'llar (`~`,
   `~/.ssh`, `~/.config/servergo`, `/etc`...) ataylab rad etiladi
+- **Seccomp filtri** — qochib chiqish uchun ishlatiladigan tizim chaqiruvlari
+  kesilgan: `ptrace` va `process_vm_*` (boshqa jarayonning xotirasi), `keyctl`
+  (kernel kalit halqasi), `bpf`, `perf_event_open`, `io_uring_setup`, modul
+  yuklash, `mount`/`pivot_root`/`setns`/`unshare` (yangi namespace ochib
+  himoyani aylanib o'tish). Ular "yo'q" (ENOSYS) deb javob beradi, shuning
+  uchun kutubxonalar o'zi muqobil yo'lga o'tadi va oddiy ilovalar hech narsani
+  sezmaydi
 - **Yumshoq to'xtatish saqlanadi** — SIGTERM sandbox ichidagi jarayonlarga
   yetib boradi (PID namespace bo'yicha topiladi), ya'ni ilova bazani yopib,
   navbatni tugatib chiqadi. 10 soniyada javob bermasa SIGKILL
@@ -440,7 +447,7 @@ internal/
   apps/store/            SQLite: ilovalar (~/.config/servergo/apps/apps.db)
   apps/manager/          jarayon boshqaruvi: start/stop, avto-restart, loglar
   apps/sandbox/          bubblewrap izolyatsiyasi: bwrap argumentlari, PID
-                         namespace bo'yicha signal yuborish
+                         namespace bo'yicha signal yuborish, seccomp filtri
   pm2/pm2.go             pm2 CLI: jlist, start/stop/restart/delete, flush, ping
   pm2/logs.go            log fayl tail (oxiridan 128 KB)
   sysmon/proc.go         /proc o'qish, meminfo, jarayonlarni guruhlash
