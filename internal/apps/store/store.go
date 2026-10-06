@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -16,11 +17,17 @@ import (
 // App — bitta ilova: buyruq + ishchi papka, ServerGo tomonidan boshqariladi
 // (pm2'ga bog'liq emas).
 type App struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Command   string    `json:"command"` // to'liq buyruq qatori, `sh -c` orqali bajariladi
-	Cwd       string    `json:"cwd"`     // ishchi papka (bo'sh — uy papkasi)
-	Autostart bool      `json:"autostart"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Command   string `json:"command"` // to'liq buyruq qatori, `sh -c` orqali bajariladi
+	Cwd       string `json:"cwd"`     // ishchi papka (bo'sh — uy papkasi)
+	Autostart bool   `json:"autostart"`
+	// Sandbox — ilova bubblewrap ichida, uy papkasi yopilgan holda ishlaydi.
+	// Qarang: internal/apps/sandbox.
+	Sandbox bool `json:"sandbox"`
+	// SandboxRW — sandbox ichida qo'shimcha ko'rinadigan (yozish mumkin)
+	// yo'llar: loyihadan tashqaridagi ma'lumot papkasi, tashqi skript...
+	SandboxRW []string  `json:"sandboxRw"`
 	Status    string    `json:"status"` // stopped | starting | running | error
 	LastError string    `json:"lastError"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -72,23 +79,49 @@ CREATE TABLE IF NOT EXISTS apps (
   cwd         TEXT NOT NULL DEFAULT '',
   status      TEXT NOT NULL DEFAULT 'stopped',
   autostart   INTEGER NOT NULL DEFAULT 0,
+  sandbox     INTEGER NOT NULL DEFAULT 0,
+  sandbox_rw  TEXT NOT NULL DEFAULT '',
   last_error  TEXT NOT NULL DEFAULT '',
   created_at  TEXT NOT NULL
 );`)
+	if err != nil {
+		return err
+	}
+	// Eski o'rnatishlar: jadval allaqachon mavjud, ustunlar yo'q.
+	for _, c := range []string{
+		`sandbox INTEGER NOT NULL DEFAULT 0`,
+		`sandbox_rw TEXT NOT NULL DEFAULT ''`,
+	} {
+		if err := s.ensureColumn(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureColumn — ustun bo'lmasa qo'shadi. SQLite "duplicate column name"
+// xatosini qaytaradi, o'shani jim o'tkazamiz (IF NOT EXISTS qo'llanmaydi).
+func (s *Store) ensureColumn(def string) error {
+	_, err := s.db.Exec(`ALTER TABLE apps ADD COLUMN ` + def)
+	if err != nil && strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
 	return err
 }
 
-const appCols = `id, name, command, cwd, status, autostart, last_error, created_at`
+const appCols = `id, name, command, cwd, status, autostart, sandbox, sandbox_rw, last_error, created_at`
 
 func scanApp(row interface{ Scan(...any) error }) (App, error) {
 	var a App
-	var auto int
-	var created string
-	err := row.Scan(&a.ID, &a.Name, &a.Command, &a.Cwd, &a.Status, &auto, &a.LastError, &created)
+	var auto, sb int
+	var rw, created string
+	err := row.Scan(&a.ID, &a.Name, &a.Command, &a.Cwd, &a.Status, &auto, &sb, &rw, &a.LastError, &created)
 	if err != nil {
 		return a, err
 	}
 	a.Autostart = auto == 1
+	a.Sandbox = sb == 1
+	a.SandboxRW = splitPaths(rw)
 	a.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	return a, nil
 }
@@ -127,15 +160,21 @@ func (s *Store) SaveApp(a App) error {
 	if a.Autostart {
 		auto = 1
 	}
+	sb := 0
+	if a.Sandbox {
+		sb = 1
+	}
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = time.Now()
 	}
 	_, err := s.db.Exec(`
-INSERT INTO apps (`+appCols+`) VALUES (?,?,?,?,?,?,?,?)
+INSERT INTO apps (`+appCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET
   name=excluded.name, command=excluded.command, cwd=excluded.cwd,
-  status=excluded.status, autostart=excluded.autostart, last_error=excluded.last_error`,
-		a.ID, a.Name, a.Command, a.Cwd, a.Status, auto, a.LastError,
+  status=excluded.status, autostart=excluded.autostart,
+  sandbox=excluded.sandbox, sandbox_rw=excluded.sandbox_rw,
+  last_error=excluded.last_error`,
+		a.ID, a.Name, a.Command, a.Cwd, a.Status, auto, sb, joinPaths(a.SandboxRW), a.LastError,
 		a.CreatedAt.Format(time.RFC3339))
 	return err
 }
@@ -155,4 +194,26 @@ func (s *Store) DeleteApp(id string) error {
 func (s *Store) ResetRunningStatuses() error {
 	_, err := s.db.Exec(`UPDATE apps SET status = 'stopped' WHERE status IN ('running','starting')`)
 	return err
+}
+
+// splitPaths / joinPaths — SandboxRW ro'yxati bazada bitta matn ustunida,
+// qator ajratgich bilan saqlanadi (yo'llarda vergul bo'lishi mumkin).
+func splitPaths(v string) []string {
+	out := []string{}
+	for _, l := range strings.Split(v, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func joinPaths(list []string) string {
+	clean := make([]string, 0, len(list))
+	for _, l := range list {
+		if l = strings.TrimSpace(l); l != "" {
+			clean = append(clean, l)
+		}
+	}
+	return strings.Join(clean, "\n")
 }

@@ -33,6 +33,50 @@ cloudflared boshqaruvi bilan bir xil naqsh:
 - Run / Stop / Restart / Tahrir / O'chirish, loglar (stdout+stderr, dastur
   ichida ko'rish, fayl sifatida ham saqlanadi)
 
+#### Sandbox (izolyatsiya)
+
+Ilova buzilsa — masalan paketdagi teshik yoki webhook orqali kod bajarilsa —
+hujumchi ServerGo bilan bir xil foydalanuvchi huquqlarini oladi: SSH
+kalitlari, brauzer profillari, qolgan hamma loyihaning `.env` fayllari,
+ServerGo'ning relay tokeni va cloudflared sertifikati. Ya'ni bitta ilovaning
+teshigi butun kompyuterni va barcha tunnellarni beradi.
+
+Shuning uchun har bir ilovani **sandbox** ichida ishga tushirish mumkin
+([bubblewrap](https://github.com/containers/bubblewrap) orqali, `root`
+kerak emas):
+
+- **Uy papkasi yopiladi** — ustiga bo'sh tmpfs qo'yiladi, so'ng faqat
+  ilovaning o'z ishchi papkasi qaytariladi (yozish huquqi bilan). Ilova uchun
+  uy papkasida boshqa hech narsa mavjud emas
+- **Alohida PID namespace** — ilova boshqa jarayonlarni ko'rmaydi, demak
+  `/proc/<pid>/environ` orqali qo'shnilarining sirlarini o'qiy olmaydi
+- **`/usr` va `/etc` faqat o'qish uchun** — node, python, SSL sertifikatlar va
+  DNS ishlayveradi, lekin ilova tizimga yozib qo'ya olmaydi
+- **`XDG_RUNTIME_DIR` o'rniga bo'sh tmpfs** — haqiqiy `/run/user/<uid>` ichida
+  `systemd --user` va D-Bus sokitlari bor, ular orqali sandbox'dan chiqib
+  ketish mumkin edi
+- **Qo'shimcha yo'llar** — loyihadan tashqaridagi ma'lumot papkasi yoki tashqi
+  skript kerak bo'lsa, formada (yoki `-r` bilan) qo'shiladi. Himoyani bekor
+  qiladigan yo'llar (`~`, `~/.ssh`, `~/.config/servergo`, `/etc`...) ataylab
+  rad etiladi
+- **Yumshoq to'xtatish saqlanadi** — SIGTERM sandbox ichidagi jarayonlarga
+  yetib boradi (PID namespace bo'yicha topiladi), ya'ni ilova bazani yopib,
+  navbatni tugatib chiqadi. 10 soniyada javob bermasa SIGKILL
+- Yangi ilova uchun sandbox **standart holatda yoqilgan**. Mavjud ilovalar
+  o'zgarmaydi — ularda jadvalda sariq `YO'Q` belgisi ko'rinadi va bir
+  bosishda yoqiladi
+
+Tarmoq ataylab ochiq qoldirilgan: ilovalar portga quloq solishi va internetga
+chiqishi kerak (tunnel shunga tayanadi). Demak sandbox'dagi ilova hali ham
+`localhost`dagi boshqa portlarni (postgres, redis, qo'shni API) ko'radi.
+
+```
+servergo apps create bot "node bot.js" -c /home/user/bot -a      # sandbox avtomatik
+servergo apps create bot "node bot.js" -c /home/user/bot -r /home/user/data
+servergo apps create eski "node x.js" -c /home/user/x --no-sandbox
+servergo apps sandbox bot on                                      # mavjud ilovada yoqish
+```
+
 ### RAM
 
 - `/proc/meminfo` dan jonli xotira holati: band, kesh/bufer, bo'sh, mavjud, swap
@@ -209,6 +253,9 @@ Fayllar: `~/.config/servergo/vpstunnel/` (Cloudflare bo'limining
 
 - Go 1.21+
 - `pm2` global o'rnatilgan (`npm i -g pm2`)
+- `bubblewrap` — Ilovalar bo'limidagi sandbox uchun
+  (`sudo apt install bubblewrap`). Bo'lmasa bo'lim ishlayveradi, lekin
+  sandbox belgisi sababi bilan o'chirilgan ko'rinadi
 - webkit2gtk dev fayllari (cgo uchun):
 
 ```bash
@@ -351,7 +398,11 @@ servergo ram -a                # aniq rejim (PSS)
 servergo ram kill 12345        # jarayon daraxtini to'xtatish (pid)
 
 servergo apps                                  # ilovalar ro'yxati (pm2'ga bog'liq emas)
-servergo apps create bot "node bot.js" -a      # -a: avtostart ham yoqiladi
+servergo apps create bot "node bot.js" -c /home/user/bot -a   # -a: avtostart,
+                                               # -c bo'lsa sandbox o'zi yoqiladi
+servergo apps create bot "node bot.js" -c /home/user/bot -r /home/user/data
+                                               # -r: sandbox'da qo'shimcha yo'l
+servergo apps sandbox bot off                  # izolyatsiyani o'chirish
 servergo apps restart bot                      # nom yoki id bo'yicha
 servergo apps logs bot
 
@@ -383,6 +434,8 @@ internal/
   apps/service.go        Ilovalar bo'limi mantiqi (pm2'ga bog'liq emas)
   apps/store/            SQLite: ilovalar (~/.config/servergo/apps/apps.db)
   apps/manager/          jarayon boshqaruvi: start/stop, avto-restart, loglar
+  apps/sandbox/          bubblewrap izolyatsiyasi: bwrap argumentlari, PID
+                         namespace bo'yicha signal yuborish
   pm2/pm2.go             pm2 CLI: jlist, start/stop/restart/delete, flush, ping
   pm2/logs.go            log fayl tail (oxiridan 128 KB)
   sysmon/proc.go         /proc o'qish, meminfo, jarayonlarni guruhlash
@@ -410,6 +463,13 @@ Dastur ichida HTTP server ishlaydi (UI shu orqali ma'lumot oladi). U:
   oyna ochilganda URL orqali beriladi
 
 Ya'ni bu mashinadagi boshqa dasturlar API ga kira olmaydi.
+
+### Ilovalar bo'limidagi izolyatsiya
+
+Boshqarilayotgan ilovalar — eng katta xavf maydoni: ularning kodi tashqi
+paketlarga va internetdan kelgan so'rovlarga tayanadi. Shuning uchun har bir
+ilovani bubblewrap sandbox'ida, uy papkasi yopilgan holda ishga tushirish
+mumkin. Batafsil: [Ilovalar → Sandbox](#sandbox-izolyatsiya).
 
 ### RAM bo'limidagi himoyalar
 

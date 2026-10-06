@@ -18,6 +18,7 @@ func (s *Server) registerAppRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/apps/delete", s.guard(s.appsDelete))
 	mux.HandleFunc("/api/apps/logs", s.guard(s.appsLogs))
 	mux.HandleFunc("/api/apps/events", s.guard(s.appsEvents))
+	mux.HandleFunc("/api/apps/sandbox", s.guard(s.appsSandbox))
 }
 
 var errNoApps = errors.New("ilovalar bo'limi mavjud emas")
@@ -140,6 +141,16 @@ func (s *Server) appsLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeOK(w, svc.AppLogs(id))
+}
+
+// appsSandbox — bu tizimda sandbox (bubblewrap) ishlaydimi. UI shu javobga
+// qarab belgini faol yoki sababi bilan o'chirilgan ko'rsatadi.
+func (s *Server) appsSandbox(w http.ResponseWriter, r *http.Request) {
+	svc, ok := s.appsSvc(w)
+	if !ok {
+		return
+	}
+	writeOK(w, svc.SandboxStatus())
 }
 
 func (s *Server) appsEvents(w http.ResponseWriter, r *http.Request) {

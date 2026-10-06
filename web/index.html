@@ -284,6 +284,7 @@
                 <th class="num">Port</th>
                 <th>Holat</th>
                 <th>Avtostart</th>
+                <th>Sandbox</th>
                 <th class="actions-col">Amallar</th>
               </tr>
             </thead>
@@ -461,6 +462,16 @@
             <input type="text" id="af-cwd" class="search" placeholder="/home/server/Desktop/bot" />
           </label>
           <label class="auto"><input type="checkbox" id="af-autostart" /><span>Server ishga tushganda avtomatik ishga tushsin</span></label>
+          <label class="auto"><input type="checkbox" id="af-sandbox" /><span>Sandbox ichida ishlasin (tavsiya etiladi)</span></label>
+          <div class="form-hint" id="af-sandbox-hint">
+            Ilova faqat o'z ishchi papkasini ko'radi. Uy papkasi, SSH kalitlari,
+            boshqa loyihalarning <code>.env</code> fayllari va ServerGo'ning
+            tokenlari yopiladi — ilova buzilsa ham ularga yetib bormaydi.
+          </div>
+          <label class="field" id="af-rw-field" hidden>
+            <span>Qo'shimcha ko'rinadigan yo'llar (har qatorda bittasi, ixtiyoriy)</span>
+            <textarea id="af-rw" class="search" rows="2" placeholder="/home/server/ma'lumotlar"></textarea>
+          </label>
           <div class="form-note" id="af-note" hidden></div>
         </div>
         <div class="modal-actions">
